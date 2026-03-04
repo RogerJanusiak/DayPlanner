@@ -1,3 +1,11 @@
 .dsstore
 day-planner-backup.yaml
 nohup.out
+._stop.sh
+._start.sh
+._server.js
+._install.sh
+._day-planner.html
+._day-planner-backup.yaml
+._.server.log
+._.gitingnore
