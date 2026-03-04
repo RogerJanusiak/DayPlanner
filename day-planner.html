@@ -419,6 +419,28 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Georgi
 .io-btn:hover{border-color:var(--faint);color:var(--text)}
 #import-input{display:none}
 
+/* Markdown note mode toggle */
+.note-mode-bar{display:flex;align-items:center;gap:5px;margin-bottom:7px}
+.note-mode-btn{background:none;border:1px solid var(--border2);color:var(--faint);padding:3px 9px;border-radius:4px;font-family:'DM Mono',monospace;font-size:9px;cursor:pointer;transition:all .15s;letter-spacing:.06em;text-transform:uppercase}
+.note-mode-btn.active{border-color:var(--purple);color:var(--purple);background:rgba(155,143,207,.1)}
+.note-md-badge{font-family:'DM Mono',monospace;font-size:8px;color:var(--faint);border:1px solid var(--faint);padding:1px 5px;border-radius:3px;margin-left:auto;letter-spacing:.1em}
+.md-preview{font-family:'DM Mono',monospace;font-size:12px;line-height:1.7;color:var(--text);min-height:120px;max-height:400px;padding:11px 13px;background:var(--bg3);border:1px solid var(--border2);border-radius:8px;cursor:pointer;word-break:break-word;overflow-y:auto;box-sizing:border-box;width:100%}
+.md-preview:hover{border-color:var(--purple)}
+.md-preview h1{font-family:'Playfair Display',serif;font-size:19px;font-weight:900;color:var(--text);margin:12px 0 5px}
+.md-preview h2{font-family:'Playfair Display',serif;font-size:16px;font-weight:700;color:var(--text);margin:10px 0 4px}
+.md-preview h3{font-family:'Playfair Display',serif;font-size:14px;font-weight:700;color:var(--text);margin:8px 0 3px}
+.md-preview ul,.md-preview ol{padding-left:20px;margin:4px 0}
+.md-preview li{padding:1px 0}
+.md-preview code{background:var(--bg4);padding:1px 5px;border-radius:3px;font-family:'DM Mono',monospace;font-size:10px;color:var(--teal)}
+.md-preview blockquote{border-left:3px solid var(--border2);padding-left:10px;color:var(--muted);margin:4px 0}
+.md-preview a{color:var(--purple);text-decoration:underline}
+.md-preview hr{border:none;border-top:1px solid var(--border2);margin:8px 0}
+.md-preview p{margin:4px 0}
+/* 1-hour block styling */
+.block-row-1h{min-height:62px}
+.block-row-1h .color-bar{height:50px}
+.block-1h-badge{font-family:'DM Mono',monospace;font-size:8px;background:rgba(232,201,122,.15);color:var(--gold);border:1px solid rgba(232,201,122,.3);padding:1px 5px;border-radius:3px;white-space:nowrap}
+
 /* Importance stars */
 .importance-row{display:flex;align-items:center;gap:10px;margin-bottom:14px}
 .importance-label{font-family:'DM Mono',monospace;font-size:9px;color:var(--muted);letter-spacing:.12em;text-transform:uppercase;flex-shrink:0}
@@ -512,7 +534,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Georgi
 
   <!-- PLAN TAB -->
   <div class="tab-panel active" id="plan-panel">
-    <div id="plan-active-banner" style="display:none;padding:8px 18px 0">
+    <div id="plan-active-banner" style="display:none;position:sticky;top:0;z-index:100;padding:8px 18px 0;background:var(--bg);border-bottom:1px solid var(--border)">
       <div id="plan-active-banner-inner" style="background:rgba(232,201,122,.1);border:1px solid rgba(232,201,122,.4);border-radius:8px;padding:8px 14px;display:flex;align-items:center;gap:10px;margin-bottom:8px">
         <span id="plan-active-banner-name" style="font-family:'DM Mono',monospace;font-size:11px;color:var(--gold);flex:1"></span>
         <button id="plan-active-banner-btn" style="background:var(--gold);color:var(--bg);border:none;padding:5px 13px;border-radius:5px;font-family:'DM Mono',monospace;font-size:10px;font-weight:500;cursor:pointer;white-space:nowrap;transition:opacity .15s" onmouseenter="this.style.opacity='.85'" onmouseleave="this.style.opacity='1'">→ Open Focus View</button>
@@ -598,10 +620,33 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Georgi
         <div id="block-focus-title">Block</div>
         <div id="block-focus-time"></div>
       </div>
+      <!-- Importance -->
+      <div class="block-focus-section" style="padding:14px 20px">
+        <div class="block-focus-section-label" style="margin-bottom:10px">Importance</div>
+        <div class="star-picker" id="focus-star-picker">
+          <button class="star-btn" data-val="1">★</button>
+          <button class="star-btn" data-val="2">★</button>
+          <button class="star-btn" data-val="3">★</button>
+          <button class="star-btn" data-val="4">★</button>
+          <button class="star-btn" data-val="5">★</button>
+        </div>
+        <button class="clear-imp-btn" id="focus-clear-imp-btn" style="margin-top:8px">clear</button>
+      </div>
+      <!-- Notes with markdown -->
       <div class="block-focus-section">
-        <div class="block-focus-section-label">Notes</div>
-        <textarea id="block-focus-note-area" placeholder="Write notes for this block…"></textarea>
-        <button id="block-focus-save-note">Save Note</button>
+        <div class="block-focus-section-label" style="display:flex;align-items:center">
+          <span>Notes</span><span class="note-md-badge" style="margin-left:8px">.md</span>
+        </div>
+        <div class="note-mode-bar">
+          <button class="note-mode-btn active" id="focus-mode-edit">Edit</button>
+          <button class="note-mode-btn" id="focus-mode-preview">Preview</button>
+        </div>
+        <textarea id="block-focus-note-area" placeholder="Write notes for this block… (supports **markdown**)"></textarea>
+        <div class="md-preview" id="block-focus-md-preview" style="display:none"></div>
+        <div style="display:flex;align-items:center;gap:10px;margin-top:8px">
+          <button id="block-focus-save-note">Save Note</button>
+          <span id="focus-save-status" style="font-family:'DM Mono',monospace;font-size:10px;color:var(--green);opacity:0;transition:opacity .3s"></span>
+        </div>
       </div>
       <div class="block-focus-section">
         <div class="block-focus-section-label">To-dos</div>
@@ -726,8 +771,15 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Georgi
         </div>
         <button class="clear-imp-btn" id="clear-imp-btn">clear</button>
       </div>
-      <div class="notes-section-label">Notes</div>
-      <textarea id="notes-textarea" placeholder="Context, goals, or anything for this block…"></textarea>
+      <div class="notes-section-label" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+        <span>Notes</span>
+        <div style="display:flex;gap:4px">
+          <button id="notes-mode-edit" class="tab-btn active" style="padding:3px 8px;font-size:9px;border-bottom-width:1px">EDIT</button>
+          <button id="notes-mode-preview" class="tab-btn" style="padding:3px 8px;font-size:9px;border-bottom-width:1px">PREVIEW</button>
+        </div>
+      </div>
+      <textarea id="notes-textarea" placeholder="Context, goals, or anything for this block… (supports **markdown**)"></textarea>
+      <div id="notes-md-preview" style="display:none;background:var(--bg);border:1px solid var(--border2);color:var(--text);font-family:Georgia,serif;font-size:11px;border-radius:8px;padding:9px 11px;min-height:82px;line-height:1.7;cursor:pointer"></div>
       <div class="notes-section-label notes-gap">To-do list</div>
       <div id="todo-list"></div>
       <div id="add-todo-row">
@@ -794,7 +846,7 @@ function dateFromStr(ds){return new Date(ds+'T12:00:00')}
 function isWeekend(ds){const d=dateFromStr(ds).getDay();return d===0||d===6}
 function formatDateLabel(ds){return dateFromStr(ds).toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'}).toUpperCase()}
 function formatTime(h,half){const hr=h%12||12,ap=h<12?'AM':'PM';return `${hr}:${half?'30':'00'} ${ap}`}
-function formatSecs(s){s=Math.max(0,Math.floor(s));return `${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`}
+function formatSecs(s){s=Math.max(0,Math.floor(s));if(s>=3600){const h=Math.floor(s/3600);return `${h}:${String(Math.floor((s%3600)/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`}return `${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`}
 function setDay(ds,data){state.days[ds]=data}
 function currentDayData(){return getDay(ui.currentDate)}
 function getProject(id){return state.projects.find(p=>p.id===id)}
@@ -803,8 +855,9 @@ function isToday(){return ui.currentDate===todayStr()}
 function blockToTime(idx){return[Math.floor(idx/2)+6,idx%2]}
 function escAttr(s){return(s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;')}
 function getTimerRemaining(){
+  const dur=getBlockDuration(ui.activeBlock);
   const ms=ui.timerRunning?ui.timerElapsedMs+(Date.now()-ui.timerStartedAt):ui.timerElapsedMs;
-  return Math.max(0,30*60-ms/1000);
+  return Math.max(0,dur-ms/1000);
 }
 function blockHasContent(idx,ds){
   const n=((state.days[ds||ui.currentDate]||{}).blockNotes||{})[idx];
@@ -924,6 +977,7 @@ function load(){
   if(!state.projectTodos)state.projectTodos={};
   Object.keys(state.days).forEach(ds=>{
     if(!state.days[ds].blockNotes)state.days[ds].blockNotes={};
+    if(!state.days[ds].blockSpan)state.days[ds].blockSpan={};
     if(state.days[ds].timeOff===undefined)state.days[ds].timeOff=isWeekend(ds);
   });
   ensureForwardDays();
@@ -968,12 +1022,19 @@ function restoreTimerState(){
 // Get or auto-init a day, setting timeOff=true for weekends by default
 function getDay(ds){
   if(!state.days[ds]){
-    state.days[ds]={schedule:{},completed:[],blockNotes:{},timeOff:isWeekend(ds)};
+    state.days[ds]={schedule:{},completed:[],blockNotes:{},blockSpan:{},timeOff:isWeekend(ds)};
   }
   const d=state.days[ds];
   if(!d.blockNotes)d.blockNotes={};
+  if(!d.blockSpan)d.blockSpan={};
   if(d.timeOff===undefined)d.timeOff=isWeekend(ds);
   return d;
+}
+// Return the duration of a block in seconds (30 or 60 min based on span)
+function getBlockDuration(idx,ds){
+  if(idx===null||idx===undefined)return 30*60;
+  const span=((getDay(ds||ui.currentDate).blockSpan)||{})[idx]||1;
+  return span*30*60;
 }
 
 // ════════════════════════════════════════════════════════════
@@ -1041,6 +1102,13 @@ function toYaml(){
 
     const done=data.completed||[];
     if(done.length)L.push(`    completed: [${[...done].sort((a,b)=>a-b).join(', ')}]`);
+
+    // blockSpan — 1-hour block markers
+    const spans=Object.entries(data.blockSpan||{}).filter(([,v])=>v>=2);
+    if(spans.length){
+      L.push('    blockSpan:');
+      spans.forEach(([idx,sp])=>{const[h,half]=blockToTime(+idx);L.push(`      ${idx}: ${sp}  # ${formatTime(h,half)}`);});
+    }
 
     // blockNotes — includes note, todos (with ids), and projTodos pins
     const notes=data.blockNotes||{};
@@ -1159,7 +1227,7 @@ function parseYaml(text){
         const dm=trim.match(/^"(\d{4}-\d{2}-\d{2})":/);
         if(dm){
           curDay=dm[1];
-          result.days[curDay]={schedule:{},completed:[],blockNotes:{},timeOff:false};
+          result.days[curDay]={schedule:{},completed:[],blockNotes:{},blockSpan:{},timeOff:false};
           inSection=null;curNoteIdx=null;inNoteSection=null;curTodoItem=null;
           continue;
         }
@@ -1170,12 +1238,19 @@ function parseYaml(text){
         if(trim==='timeOff: true'){result.days[curDay].timeOff=true;continue;}
         if(trim==='schedule:'){inSection='schedule';inNoteSection=null;continue;}
         if(trim==='blockNotes:'){inSection='blockNotes';inNoteSection=null;continue;}
+        if(trim==='blockSpan:'){inSection='blockSpan';inNoteSection=null;continue;}
         if(trim.startsWith('completed:')){
           inSection=null;
           const nums=trim.match(/\d+/g);
           if(nums)result.days[curDay].completed=nums.map(Number);
           continue;
         }
+      }
+
+      if(inSection==='blockSpan'&&indent===6){
+        const m=trim.match(/^(\d+):\s*(\d+)/);
+        if(m){if(!result.days[curDay].blockSpan)result.days[curDay].blockSpan={};result.days[curDay].blockSpan[m[1]]=+m[2];}
+        continue;
       }
 
       if(inSection==='schedule'&&indent===6){
@@ -1252,14 +1327,26 @@ function requestNotifPermission(){
   }
 }
 function fireTimerNotification(projName){
-  if(!('Notification' in window)||Notification.permission!=='granted')return;
-  const n=new Notification('Block complete ✓',{
-    body: projName ? `${projName} — 30 min block finished!` : '30 min block finished!',
-    icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><text y="52" font-size="52">⏱</text></svg>',
+  if(!('Notification' in window)){
+    // Fallback: show browser alert if Notification API not available
+    alert('✓ Block Complete!\n' + (projName ? projName : 'Your 30-minute block is finished!'));
+    return;
+  }
+  if(Notification.permission==='default'){
+    Notification.requestPermission().then(perm=>{if(perm==='granted')fireTimerNotification(projName);});
+    return;
+  }
+  if(Notification.permission!=='granted')return;
+  const notifTitle='Block Complete ✓';
+  const durationText=parseInt(projName?.match(/\d+\s*(?:min|hour|h|m)/)?.[0]||'30')>30?'1-hour':'30-minute';
+  const n=new Notification(notifTitle,{
+    body: projName ? `${projName}\n${durationText} block finished!` : `${durationText} block finished!`,
+    icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><circle cx="32" cy="32" r="30" fill="%239B8FCF" opacity="0.2"/><text x="32" y="48" text-anchor="middle" font-size="32" font-weight="bold">✓</text></svg>',
     tag:'day-planner-timer',
-    silent:false
+    silent:false,
+    requireInteraction:false
   });
-  setTimeout(()=>n.close(),6000);
+  setTimeout(()=>n.close(),8000);
 }
 function startTimer(blockIdx){
   clearInterval(ui.timerInterval);
@@ -1306,7 +1393,10 @@ function doneTimer(){
 }
 function completeBlock(idx){
   const day=currentDayData();
-  if(!day.completed.includes(idx)){day.completed.push(idx);setDay(ui.currentDate,day);save();}
+  const span=(day.blockSpan||{})[idx]||1;
+  let changed=false;
+  for(let i=0;i<span;i++){if(!day.completed.includes(idx+i)){day.completed.push(idx+i);changed=true;}}
+  if(changed){setDay(ui.currentDate,day);save();}
 }
 
 // ════════════════════════════════════════════════════════════
@@ -1318,8 +1408,28 @@ function assignBlock(blockIdx,projId){
 }
 function assignBlock1hr(blockIdx,projId){
   const day=currentDayData();
+  if(!day.blockSpan)day.blockSpan={};
+  // Check if there's space for a 1-hour block
+  if(blockIdx+1>35){
+    alert('Not enough space for a 1-hour block at this time.');
+    return;
+  }
+  // Check if the next block is occupied
+  const nextBlockOccupied=day.schedule[blockIdx+1];
+  if(nextBlockOccupied){
+    // Ask if user wants to delete the next block
+    if(!confirm('The next 30-minute slot is occupied. Delete it to make room for this 1-hour block?')){
+      return;
+    }
+    // Delete the next block if it exists and user confirms
+    delete day.schedule[blockIdx+1];
+    day.completed=day.completed.filter(i=>i!==blockIdx+1);
+    if(day.blockNotes)delete day.blockNotes[blockIdx+1];
+    if(day.blockSpan)delete day.blockSpan[blockIdx+1];
+  }
   day.schedule[blockIdx]=projId;
-  if(blockIdx+1<=35)day.schedule[blockIdx+1]=projId;
+  day.schedule[blockIdx+1]=projId;
+  day.blockSpan[blockIdx]=2; // marks as 1-hour span start
   setDay(ui.currentDate,day);save();
   closeDropdown();renderScheduleGrid();renderSidebar();renderTodayTab();renderHeaderStats();
 }
@@ -1339,9 +1449,11 @@ function clearBlock(blockIdx){
     if(!confirm(msg))return;
   }
 
-  delete day.schedule[blockIdx];
-  day.completed=day.completed.filter(i=>i!==blockIdx);
+  const span=(day.blockSpan||{})[blockIdx]||1;
+  for(let i=0;i<span;i++){delete day.schedule[blockIdx+i];}
+  day.completed=day.completed.filter(i=>{for(let s=0;s<span;s++)if(i===blockIdx+s)return false;return true;});
   if(day.blockNotes)delete day.blockNotes[blockIdx];
+  if(day.blockSpan)delete day.blockSpan[blockIdx];
   if(ui.activeBlock===blockIdx)doneTimer();
   setDay(ui.currentDate,day);save();
   renderScheduleGrid();renderSidebar();renderTodayTab();renderHeaderStats();
@@ -1383,6 +1495,7 @@ function openNotesModal(blockIdx,ds){
   document.getElementById('notes-modal-proj').style.color=proj?proj.color:'var(--text)';
   document.getElementById('notes-modal-time').textContent=formatTime(h,half);
   document.getElementById('notes-textarea').value=ex.note||'';
+  document.getElementById('notes-textarea')._savedValue=ex.note||'';
   // Importance stars
   const impVal=ex.importance||0;
   function updateStars(val){
@@ -1397,6 +1510,24 @@ function openNotesModal(blockIdx,ds){
     };
   });
   document.getElementById('clear-imp-btn').onclick=()=>updateStars(0);
+  // Markdown edit/preview setup
+  const textarea=document.getElementById('notes-textarea');
+  const preview=document.getElementById('notes-md-preview');
+  const editBtn=document.getElementById('notes-mode-edit');
+  const previewBtn=document.getElementById('notes-mode-preview');
+  function showEdit(){
+    textarea.style.display='';preview.style.display='none';
+    editBtn.classList.add('active');previewBtn.classList.remove('active');
+  }
+  function showPreview(){
+    preview.innerHTML=renderMarkdown(textarea.value);
+    textarea.style.display='none';preview.style.display='block';
+    previewBtn.classList.add('active');editBtn.classList.remove('active');
+  }
+  showEdit();
+  editBtn.onclick=showEdit;
+  previewBtn.onclick=showPreview;
+  preview.onclick=showEdit;
   renderTodoList(ex.todos||[]);
   renderBlockProjTodos(proj?.id,blockIdx,ui.notesDate);
   document.getElementById('notes-overlay').classList.add('open');
@@ -1915,6 +2046,10 @@ function renderScheduleGrid(){
   renderPlanBanner();
   const grid=document.getElementById('schedule-grid');grid.innerHTML='';
   const day=currentDayData(),sched=day.schedule||{},done=new Set(day.completed||[]);
+  const blockSpan=day.blockSpan||{};
+  // Build set of slots that are spanned (should not be rendered as their own row)
+  const spannedSlots=new Set();
+  Object.entries(blockSpan).forEach(([startIdx,span])=>{for(let i=1;i<span;i++)spannedSlots.add(+startIdx+i);});
   const readOnly=false;
   for(let h=6;h<=23;h++){
     const group=document.createElement('div');group.className='hour-group';
@@ -1922,27 +2057,44 @@ function renderScheduleGrid(){
     group.appendChild(lbl);
     const blocks=document.createElement('div');blocks.className='hour-blocks';
     for(let half=0;half<2;half++){
-      const idx=(h-6)*2+half,projId=sched[idx],proj=projId?getProject(projId):null;
+      const idx=(h-6)*2+half;
+      // Skip slots that are part of a span (visually merged into the start slot)
+      if(spannedSlots.has(idx))continue;
+      const projId=sched[idx],proj=projId?getProject(projId):null;
+      const span=blockSpan[idx]||1;
       const isCompleted=done.has(idx),isActive=ui.activeBlock===idx,hasNotes=blockHasContent(idx);
       const row=document.createElement('div');
-      row.className='block-row '+(half===0?'block-divider-solid':'block-divider-dashed');
+      const baseClass='block-row '+(half===0?'block-divider-solid':'block-divider-dashed');
+      row.className=baseClass+(span>=2?' block-row-1h':'');
       row.id=`block-row-${idx}`;row.dataset.idx=idx;
-      if(half===1){const hl=document.createElement('div');hl.className='block-half-label';hl.textContent=formatTime(h,true);row.appendChild(hl);}
+      if(half===1&&span<2){const hl=document.createElement('div');hl.className='block-half-label';hl.textContent=formatTime(h,true);row.appendChild(hl);}
       if(!readOnly&&proj){
         const dh=document.createElement('span');dh.className='drag-handle';dh.textContent='⠿';dh.title='Drag to move';row.appendChild(dh);
       }
       const bar=document.createElement('div');bar.className='color-bar';
       bar.style.background=proj?proj.color:'var(--bg3)';bar.style.opacity=isCompleted?'.35':'1';
+      if(span>=2)bar.style.height='50px';
       row.appendChild(bar);
-      const label=document.createElement('div');label.className='block-label';
+      const label=document.createElement('div');label.className='block-label';label.style.flexDirection='column';label.style.alignItems='flex-start';label.style.gap='3px';
       if(proj){
         label.style.color=isCompleted?'var(--faint)':proj.color;
-        label.innerHTML=`${proj.emoji} ${proj.name}`;
-        if(isCompleted)label.innerHTML+=` <span class="badge-done">✓</span>`;
-        if(isActive)label.innerHTML+=` <span class="badge-active pulse">● active</span>`;
-        if(hasNotes)label.innerHTML+=` <span class="badge-notes" title="Notes">📝</span>`;
+        // Build label content
+        const nameLine=document.createElement('div');nameLine.style.display='flex';nameLine.style.alignItems='center';nameLine.style.gap='5px';
+        nameLine.innerHTML=`${proj.emoji} ${proj.name}`;
+        if(isCompleted)nameLine.innerHTML+=` <span class="badge-done">✓</span>`;
+        if(isActive)nameLine.innerHTML+=` <span class="badge-active pulse">● active</span>`;
+        if(hasNotes)nameLine.innerHTML+=` <span class="badge-notes" title="Notes">📝</span>`;
+        label.appendChild(nameLine);
+        // For 1-hour blocks, show time range + badge
+        if(span>=2){
+          const timeLine=document.createElement('div');
+          timeLine.style.cssText='font-size:9px;color:var(--faint);display:flex;align-items:center;gap:6px';
+          const[eh,ehalf]=blockToTime(idx+span);
+          timeLine.innerHTML=`${formatTime(h,half===1)} → ${formatTime(eh,ehalf===1)} <span class="block-1h-badge">1h</span>`;
+          label.appendChild(timeLine);
+        }
+        label.querySelector('.badge-notes')?.addEventListener('click',e=>{e.stopPropagation();openNotesModal(idx);});
       } else {label.style.color='var(--faint)';label.textContent='—';}
-      label.querySelector('.badge-notes')?.addEventListener('click',e=>{e.stopPropagation();openNotesModal(idx);});
       row.appendChild(label);
       if(!readOnly){
         const actions=document.createElement('div');actions.className='block-actions';actions.id=`actions-${idx}`;actions.style.opacity='0';
@@ -1956,8 +2108,10 @@ function renderScheduleGrid(){
           const ub=document.createElement('button');ub.className='undone-btn-small';ub.textContent='✗ undo';
           ub.onclick=e=>{
             e.stopPropagation();
-            const day=currentDayData();day.completed=day.completed.filter(i=>i!==idx);
-            setDay(ui.currentDate,day);save();renderScheduleGrid();renderSidebar();renderTodayTab();renderHeaderStats();
+            const dayD=currentDayData();
+            const sp=blockSpan[idx]||1;
+            for(let i=0;i<sp;i++)dayD.completed=dayD.completed.filter(x=>x!==idx+i);
+            setDay(ui.currentDate,dayD);save();renderScheduleGrid();renderSidebar();renderTodayTab();renderHeaderStats();
           };
           actions.appendChild(ub);
         }
@@ -1966,11 +2120,11 @@ function renderScheduleGrid(){
         if(proj){const cb=document.createElement('button');cb.className='clear-btn';cb.textContent='✕';cb.onclick=e=>{e.stopPropagation();clearBlock(idx);};actions.appendChild(cb);}
         row.appendChild(actions);
       }
-      // Block-to-block drag
-      if(!readOnly&&proj){
+      // Block-to-block drag (only for 30-min blocks; skip drag for spans to keep it simple)
+      if(!readOnly&&proj&&span<2){
         row.draggable=true;
         row.addEventListener('dragstart',e=>{
-          if(ui.dragProjId)return; // sidebar drag takes precedence
+          if(ui.dragProjId)return;
           ui.dragSrcIdx=idx;row.classList.add('dragging');
           e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('blockIdx',String(idx));
         });
@@ -2003,7 +2157,7 @@ function renderScheduleGrid(){
 //  RENDER: TIMER CARD
 // ════════════════════════════════════════════════════════════
 function renderTimerCard(){
-  const remaining=getTimerRemaining(),pct=(30*60-remaining)/(30*60);
+  const remaining=getTimerRemaining(),dur=getBlockDuration(ui.activeBlock),pct=(dur-remaining)/dur;
   document.getElementById('timer-ring').style.strokeDashoffset=CIRC*(1-pct);
   document.getElementById('timer-display').textContent=formatSecs(remaining);
   const day=currentDayData(),done=(day.completed||[]).length;
@@ -2068,6 +2222,48 @@ function renderGamePanel(){
 //  BLOCK FOCUS VIEW
 // ════════════════════════════════════════════════════════════
 
+// ════════════════════════════════════════════════════════════
+//  MARKDOWN RENDERER
+// ════════════════════════════════════════════════════════════
+function applyInlineMd(text){
+  return text
+    .replace(/\*\*\*(.+?)\*\*\*/g,'<strong><em>$1</em></strong>')
+    .replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>')
+    .replace(/\*([^*\n]+?)\*/g,'<em>$1</em>')
+    .replace(/__(.+?)__/g,'<strong>$1</strong>')
+    .replace(/_([^_\n]+?)_/g,'<em>$1</em>')
+    .replace(/~~(.+?)~~/g,'<span style="text-decoration:line-through;color:var(--faint)">$1</span>')
+    .replace(/`([^`]+)`/g,'<code>$1</code>')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g,'<a href="$2" target="_blank">$1</a>');
+}
+function renderMarkdown(text){
+  if(!text||!text.trim())return'<span style="color:var(--faint);font-style:italic;font-size:11px">No notes yet. Click Edit to write.</span>';
+  const lines=text.split('\n');
+  const out=[];
+  let inUl=false,inOl=false;
+  const closeList=()=>{if(inUl){out.push('</ul>');inUl=false;}if(inOl){out.push('</ol>');inOl=false;}};
+  lines.forEach(raw=>{
+    const l=raw.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    if(/^### /.test(l)){closeList();out.push(`<h3>${applyInlineMd(l.slice(4))}</h3>`);return;}
+    if(/^## /.test(l)){closeList();out.push(`<h2>${applyInlineMd(l.slice(3))}</h2>`);return;}
+    if(/^# /.test(l)){closeList();out.push(`<h1>${applyInlineMd(l.slice(2))}</h1>`);return;}
+    if(/^---+$|^\*\*\*+$/.test(l.trim())){closeList();out.push('<hr>');return;}
+    if(/^> /.test(l)){closeList();out.push(`<blockquote>${applyInlineMd(l.slice(2))}</blockquote>`);return;}
+    // Checkboxes
+    if(/^- \[ \] |^\* \[ \] /.test(l)){if(!inUl){out.push('<ul style="list-style:none;padding-left:4px">');inUl=true;}out.push(`<li>☐ ${applyInlineMd(l.slice(6))}</li>`);return;}
+    if(/^- \[x\] |^- \[X\] /.test(l)){if(!inUl){out.push('<ul style="list-style:none;padding-left:4px">');inUl=true;}out.push(`<li style="color:var(--faint);text-decoration:line-through"><span style="color:var(--green);text-decoration:none">☑</span> ${applyInlineMd(l.slice(6))}</li>`);return;}
+    // Lists
+    if(/^[-*] /.test(l)){if(inOl){out.push('</ol>');inOl=false;}if(!inUl){out.push('<ul>');inUl=true;}out.push(`<li>${applyInlineMd(l.slice(2))}</li>`);return;}
+    const nm=l.match(/^(\d+)\. (.+)/);
+    if(nm){if(inUl){out.push('</ul>');inUl=false;}if(!inOl){out.push('<ol>');inOl=true;}out.push(`<li>${applyInlineMd(nm[2])}</li>`);return;}
+    closeList();
+    if(!l.trim()){out.push('<p style="margin:3px 0"></p>');return;}
+    out.push(`<p>${applyInlineMd(l)}</p>`);
+  });
+  closeList();
+  return out.join('');
+}
+
 function saveInlineNote(el){
   el.style.background='';el.style.border='';el.style.margin='';
   const ds=el.dataset.date;
@@ -2106,26 +2302,81 @@ function renderBlockFocus(){
   const proj=getProject((day.schedule||{})[blockIdx]);
   const bn=(day.blockNotes||{})[blockIdx]||{note:'',todos:[]};
   const[h,half]=blockToTime(blockIdx);
+  const span=(day.blockSpan||{})[blockIdx]||1;
+  const timeLabel=span>=2?`${formatTime(h,half)} → ${formatTime(...blockToTime(blockIdx+span))}`:`${formatTime(h,half)}`;
 
   // Header
   document.getElementById('block-focus-title').textContent=proj?`${proj.emoji} ${proj.name}`:'Block';
   document.getElementById('block-focus-title').style.color=proj?proj.color:'var(--text)';
-  document.getElementById('block-focus-time').textContent=formatTime(h,half);
+  document.getElementById('block-focus-time').textContent=timeLabel;
 
-  // Note
+  // ── Importance stars ──
+  const focusImpVal=bn.importance||0;
+  function updateFocusStars(val){
+    document.querySelectorAll('#focus-star-picker .star-btn').forEach(b=>b.classList.toggle('active',+b.dataset.val<=val));
+  }
+  updateFocusStars(focusImpVal);
+  document.querySelectorAll('#focus-star-picker .star-btn').forEach(btn=>{
+    btn.onclick=()=>{
+      const cur=[...document.querySelectorAll('#focus-star-picker .star-btn')].filter(b=>b.classList.contains('active')).length;
+      const newVal=(cur===+btn.dataset.val)?0:+btn.dataset.val;
+      updateFocusStars(newVal);
+      // Auto-save importance immediately
+      const dayD=getDay(ds);
+      if(!dayD.blockNotes[blockIdx])dayD.blockNotes[blockIdx]={note:'',todos:[]};
+      dayD.blockNotes[blockIdx].importance=newVal||null;
+      setDay(ds,dayD);save();
+    };
+  });
+  document.getElementById('focus-clear-imp-btn').onclick=()=>{
+    updateFocusStars(0);
+    const dayD=getDay(ds);
+    if(dayD.blockNotes[blockIdx])dayD.blockNotes[blockIdx].importance=null;
+    setDay(ds,dayD);save();
+  };
+
+  // ── Note with dirty-state tracking + markdown ──
   const noteArea=document.getElementById('block-focus-note-area');
-  noteArea.value=bn.note||'';
+  const mdPreview=document.getElementById('block-focus-md-preview');
   const saveBtn=document.getElementById('block-focus-save-note');
-  saveBtn.textContent='Save Note';saveBtn.className='';
-  saveBtn.style.background='var(--purple)';
-  // Auto-save note on blur
+  const saveStatus=document.getElementById('focus-save-status');
+  const editBtn=document.getElementById('focus-mode-edit');
+  const previewBtn=document.getElementById('focus-mode-preview');
+
+  noteArea.value=bn.note||'';
+  noteArea._savedValue=noteArea.value;
+
+  function updateSaveBtn(){
+    const dirty=noteArea.value!==noteArea._savedValue;
+    saveBtn.style.background=dirty?'var(--purple)':'var(--green)';
+    saveBtn.textContent=dirty?'Save Note':'Saved ✓';
+    saveBtn.style.opacity=dirty?'1':'0.7';
+    saveBtn.style.cursor=dirty?'pointer':'default';
+  }
+  updateSaveBtn();
+  noteArea.oninput=updateSaveBtn;
+
+  function showEdit(){
+    noteArea.style.display='';mdPreview.style.display='none';
+    editBtn.classList.add('active');previewBtn.classList.remove('active');
+  }
+  function showPreview(){
+    mdPreview.innerHTML=renderMarkdown(noteArea.value);
+    noteArea.style.display='none';mdPreview.style.display='block';
+    previewBtn.classList.add('active');editBtn.classList.remove('active');
+  }
+  // Start in edit mode
+  showEdit();
+  editBtn.onclick=showEdit;
+  previewBtn.onclick=showPreview;
+  // Click preview to go back to edit
+  mdPreview.onclick=showEdit;
+  // Auto-save on blur but stay in edit mode
   noteArea.onblur=()=>saveBlockFocusNote();
   saveBtn.onclick=()=>saveBlockFocusNote(true);
 
   // Todos
   renderBlockFocusTodos();
-
-  // Add todo
   const inp=document.getElementById('block-focus-new-todo');
   inp.value='';
   document.getElementById('block-focus-add-todo-btn').onclick=()=>addBlockFocusTodo();
@@ -2135,12 +2386,17 @@ function saveBlockFocusNote(flash){
   const blockIdx=ui.focusBlock;if(blockIdx===null||blockIdx===undefined)return;
   const ds=todayStr();const day=getDay(ds);
   if(!day.blockNotes[blockIdx])day.blockNotes[blockIdx]={note:'',todos:[]};
-  day.blockNotes[blockIdx].note=document.getElementById('block-focus-note-area').value;
+  const noteArea=document.getElementById('block-focus-note-area');
+  day.blockNotes[blockIdx].note=noteArea.value;
   setDay(ds,day);save();
-  if(flash){
-    const btn=document.getElementById('block-focus-save-note');
-    btn.textContent='Saved ✓';btn.style.background='var(--green)';
-    setTimeout(()=>{btn.textContent='Save Note';btn.style.background='var(--purple)';},1500);
+  // Mark as saved
+  if(noteArea)noteArea._savedValue=noteArea.value;
+  const saveBtn=document.getElementById('block-focus-save-note');
+  const saveStatus=document.getElementById('focus-save-status');
+  if(saveBtn){saveBtn.style.background='var(--green)';saveBtn.textContent='Saved ✓';saveBtn.style.opacity='0.7';saveBtn.style.cursor='default';}
+  if(flash&&saveStatus){
+    saveStatus.textContent='✓ saved';saveStatus.style.opacity='1';
+    setTimeout(()=>{saveStatus.style.opacity='0';},1800);
   }
 }
 function renderBlockFocusTodos(){
@@ -2249,8 +2505,20 @@ function renderTimeline(){
   }
   const list=document.getElementById('timeline-list');list.innerHTML='';
   const day=currentDayData(),sched=day.schedule||{},done=new Set(day.completed||[]);
-  const entries=Object.entries(sched).map(([i,pid])=>({idx:+i,proj:getProject(pid)})).filter(e=>e.proj).sort((a,b)=>a.idx-b.idx);
-  document.getElementById('today-timeline-label').textContent=`TODAY'S FLOW — ${entries.length} BLOCK${entries.length!==1?'S':''} · ${(entries.length*.5).toFixed(1)}H PLANNED`;
+  const blockSpan=day.blockSpan||{};
+  // Build set of slots that are part of a span (not the start)
+  const spannedSlots=new Set();
+  Object.entries(blockSpan).forEach(([startIdx,span])=>{for(let i=1;i<span;i++)spannedSlots.add(+startIdx+i);});
+  // Only include blocks that are not part of a span (i.e., either single or span start)
+  const entries=Object.entries(sched).map(([i,pid])=>({idx:+i,proj:getProject(pid)})).filter(e=>e.proj&&!spannedSlots.has(e.idx)).sort((a,b)=>a.idx-b.idx);
+  // Calculate total blocks and hours (1-hour blocks count as 2 blocks)
+  let totalBlocks=0,totalHours=0;
+  entries.forEach(({idx})=>{
+    const span=blockSpan[idx]||1;
+    totalBlocks+=span;
+    totalHours+=span*0.5;
+  });
+  document.getElementById('today-timeline-label').textContent=`TODAY'S FLOW — ${totalBlocks} BLOCK${totalBlocks!==1?'S':''} · ${totalHours.toFixed(1)}H PLANNED`;
   if(!entries.length){list.innerHTML=`<div style="font-family:'DM Mono',monospace;font-size:12px;color:var(--faint);margin-top:60px;text-align:center;line-height:2">No blocks planned yet.<br>Go to Plan tab or drag a project to start.</div>`;return;}
   const hf=currentHourFrac();let nowInserted=false;
   entries.forEach(({idx,proj},i)=>{
@@ -2297,7 +2565,8 @@ function renderTimeline(){
     });
     block.querySelector('[data-undo]')?.addEventListener('click',e=>{
       e.stopPropagation();
-      const day=currentDayData();day.completed=day.completed.filter(i=>i!==idx);
+      const day=currentDayData();const span=(day.blockSpan||{})[idx]||1;
+      for(let i=0;i<span;i++){day.completed=day.completed.filter(j=>j!==idx+i);}
       setDay(ui.currentDate,day);save();renderTodayTab();renderScheduleGrid();renderHeaderStats();renderSidebar();
     });
   });
@@ -2459,7 +2728,19 @@ function renderStats(){
     });
   });
   const todosData=last30.map(({ds,label})=>({label,value:todosByDay[ds]||0}));
-  const momentumData=last30.map(({ds,label})=>({label,value:computeMomentumAtDay(ds)}));
+  
+  // Momentum data: find first day with any data, set all prior days to 0
+  const firstDataDay=last30.find(({ds})=>
+    (state.days[ds]?.schedule&&Object.keys(state.days[ds].schedule).length>0)||
+    state.days[ds]?.timeOff===true||
+    Object.keys(state.days[ds]?.blockNotes||{}).length>0
+  );
+  const momentumData=last30.map(({ds,label})=>{
+    if(firstDataDay&&ds<firstDataDay.ds){
+      return{label,value:0}; // Before any data, momentum is 0
+    }
+    return{label,value:computeMomentumAtDay(ds)};
+  });
 
   // Draw with explicit logical heights to prevent growing bug
   requestAnimationFrame(()=>{
@@ -2578,9 +2859,9 @@ function renderNotesTab(){
         ${e.importance?`<div class="notes-log-imp-stars" title="Importance: ${e.importance}/5">${'★'.repeat(e.importance)}${'☆'.repeat(5-e.importance)}</div>`:''}
       </div>`;
       if(e.note){
-        html+=`<div class="notes-log-note-text" contenteditable="true" data-date="${e.date}" data-idx="${e.blockIdx}" spellcheck="false" style="outline:none;cursor:text;border-radius:6px;padding:4px 6px;transition:background .15s" onmouseenter="this.style.background='var(--bg3)'" onmouseleave="if(document.activeElement!==this)this.style.background=''" onfocus="this.style.background='var(--bg3)';this.style.border='1px solid var(--purple)';this.style.margin='-1px'" onblur="saveInlineNote(this)" >${e.note.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div>`;
+        html+=`<div class="notes-log-note-text" style="border-radius:6px;padding:4px 6px;cursor:pointer;word-break:break-word;line-height:1.6;color:var(--muted)">${renderMarkdown(e.note)}</div>`;
       } else {
-        html+=`<div class="notes-log-note-text" contenteditable="true" data-date="${e.date}" data-idx="${e.blockIdx}" spellcheck="false" style="outline:none;cursor:text;color:var(--faint);border-radius:6px;padding:4px 6px;transition:background .15s;min-height:24px" onmouseenter="this.style.background='var(--bg3)'" onmouseleave="if(document.activeElement!==this)this.style.background=''" onfocus="this.style.background='var(--bg3)';this.style.border='1px solid var(--purple)';this.style.margin='-1px';if(!this.textContent.trim())this.textContent=''" onblur="saveInlineNote(this)" placeholder="Click to add note…">Click to add note…</div>`;
+        html+=`<div class="notes-log-note-text" style="border-radius:6px;padding:4px 6px;cursor:pointer;color:var(--faint);font-style:italic">Click to add note…</div>`;
       }
       if(e.todos.length){
         html+=`<div class="notes-log-todos"><div class="notes-log-todos-label">TO-DOS</div>`;
@@ -2593,6 +2874,9 @@ function renderNotesTab(){
         html+=`</div>`;
       }
       card.innerHTML=html;
+      // Make the entire card clickable to open modal
+      card.style.cursor='pointer';
+      card.onclick=()=>openNotesModal(e.blockIdx,e.date);
       group.appendChild(card);
     });
     logEl.appendChild(group);
@@ -2700,7 +2984,7 @@ function switchTab(tab){
   if(tab==='today'){ui.currentDate=todayStr();renderTodayTab();}
   if(tab==='todos')renderTodosTab();
   if(tab==='notes')renderNotesTab();
-  if(tab==='plan')setTimeout(updateTimeneedle,50);
+  if(tab==='plan'){renderScheduleGrid();renderSidebar();renderHeaderStats();setTimeout(updateTimeneedle,50);}
 }
 function renderAll(){
   renderDateNav();renderHeaderStats();renderSidebar();
