@@ -329,6 +329,18 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Georgi
 .today-todo-progress-btn:hover{border-color:var(--gold);color:var(--gold)}
 .today-todo-progress-btn.progressed{border-color:var(--gold);color:var(--gold)}
 
+/* Today Notes section */
+#today-notes-section{margin-top:16px;padding-top:16px;border-top:1px solid var(--border)}
+#today-notes-label{font-family:'DM Mono',monospace;font-size:9px;color:var(--muted);letter-spacing:.12em;text-transform:uppercase;margin-bottom:10px}
+.today-note-card{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:11px 14px;margin-bottom:8px;cursor:pointer;transition:border-color .15s}
+.today-note-card:hover{border-color:var(--border2)}
+.today-note-header{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+.today-note-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
+.today-note-proj{font-family:'DM Mono',monospace;font-size:11px;font-weight:500;flex:1}
+.today-note-time{font-family:'DM Mono',monospace;font-size:9px;color:var(--faint)}
+.today-note-body{font-family:'DM Mono',monospace;font-size:11px;color:var(--muted);line-height:1.7;white-space:pre-wrap;word-break:break-word}
+.today-note-empty{font-family:'DM Mono',monospace;font-size:10px;color:var(--faint);padding:4px 0}
+
 /* Block project todos in notes modal */
 .block-proj-todos{margin-top:10px}
 .block-proj-todo-item{display:flex;align-items:center;gap:7px;padding:5px 9px;background:var(--bg3);border-radius:6px;border:1px solid transparent;margin-bottom:3px}
@@ -531,6 +543,11 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Georgi
         <div id="today-todos-label">TODAY'S TODOS</div>
         <div id="today-todos-list"></div>
       </div>
+      <!-- Today Notes -->
+      <div id="today-notes-section">
+        <div id="today-notes-label">TODAY'S NOTES</div>
+        <div id="today-notes-list"></div>
+      </div>
     </div>
   </div>
 
@@ -598,6 +615,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Georgi
 <!-- IO BAR -->
 <div id="io-bar">
   <div id="io-bar-label">Auto-saved to browser · Export YAML for backup</div>
+  <button class="io-btn" id="export-notes-md-btn" style="display:none;border-color:var(--purple);color:var(--purple)">⬇ Export Notes (.md)</button>
   <button class="io-btn" id="export-btn">⬇ Export YAML</button>
   <button class="io-btn" id="import-btn">⬆ Import YAML</button>
   <input type="file" id="import-input" accept=".yaml,.yml">
@@ -1060,16 +1078,34 @@ function importYaml(text){
 // ════════════════════════════════════════════════════════════
 //  TIMER
 // ════════════════════════════════════════════════════════════
+function requestNotifPermission(){
+  if('Notification' in window && Notification.permission==='default'){
+    Notification.requestPermission();
+  }
+}
+function fireTimerNotification(projName){
+  if(!('Notification' in window)||Notification.permission!=='granted')return;
+  const n=new Notification('Block complete ✓',{
+    body: projName ? `${projName} — 30 min block finished!` : '30 min block finished!',
+    icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><text y="52" font-size="52">⏱</text></svg>',
+    tag:'day-planner-timer',
+    silent:false
+  });
+  setTimeout(()=>n.close(),6000);
+}
 function startTimer(blockIdx){
   clearInterval(ui.timerInterval);
+  requestNotifPermission();
   ui.activeBlock=blockIdx;ui.timerElapsedMs=0;ui.timerStartedAt=Date.now();ui.timerRunning=true;
   ui.timerInterval=setInterval(tickTimer,500);
   switchTab('today');
 }
 function tickTimer(){
   if(getTimerRemaining()<=0){
+    const proj=getProject((currentDayData().schedule||{})[ui.activeBlock]);
     completeBlock(ui.activeBlock);clearInterval(ui.timerInterval);
     ui.timerRunning=false;ui.timerElapsedMs=0;ui.timerStartedAt=null;ui.activeBlock=null;
+    fireTimerNotification(proj?`${proj.emoji} ${proj.name}`:'');
     renderAll();return;
   }
   renderTimerCard();renderDayflowMini();renderGamePanel();
@@ -1098,8 +1134,24 @@ function assignBlock(blockIdx,projId){
   closeDropdown();renderScheduleGrid();renderSidebar();renderTodayTab();renderHeaderStats();
 }
 function clearBlock(blockIdx){
-  const day=currentDayData();delete day.schedule[blockIdx];
+  const day=currentDayData();
+  const bn=(day.blockNotes||{})[blockIdx];
+  const hasNote=(bn&&bn.note||'').trim().length>0;
+  const todos=(bn&&bn.todos)||[];
+  const hasTodos=todos.length>0;
+
+  // Build warning message listing what will be lost
+  const warnings=[];
+  if(hasNote)warnings.push('the notes written for this block');
+  if(hasTodos)warnings.push(todos.length+' to-do item'+(todos.length!==1?'s':'')+' (including from Today)');
+  if(warnings.length){
+    const msg='Removing this block will also permanently delete '+warnings.join(' and ')+'.\n\nThis cannot be undone. Continue?';
+    if(!confirm(msg))return;
+  }
+
+  delete day.schedule[blockIdx];
   day.completed=day.completed.filter(i=>i!==blockIdx);
+  if(day.blockNotes)delete day.blockNotes[blockIdx];
   if(ui.activeBlock===blockIdx)doneTimer();
   setDay(ui.currentDate,day);save();
   renderScheduleGrid();renderSidebar();renderTodayTab();renderHeaderStats();
@@ -1778,7 +1830,53 @@ function renderGamePanel(){
 // ════════════════════════════════════════════════════════════
 //  RENDER: TODAY TAB
 // ════════════════════════════════════════════════════════════
-function renderTodayTab(){renderTimerCard();renderGamePanel();renderDayflowMini();renderTimeline();renderTodayTodos();}
+function renderTodayTab(){renderTimerCard();renderGamePanel();renderDayflowMini();renderTimeline();renderTodayTodos();renderTodayNotes();}
+
+function renderTodayNotes(){
+  const sec=document.getElementById('today-notes-section');
+  const list=document.getElementById('today-notes-list');
+  if(!list)return;
+  list.innerHTML='';
+  const ds=todayStr();
+  const day=getDay(ds);
+  const sched=day.schedule||{};
+  const blockNotes=day.blockNotes||{};
+
+  // Collect blocks that have a note (not just todos)
+  const entries=[];
+  Object.entries(blockNotes).forEach(([idxStr,bn])=>{
+    const note=(bn.note||'').trim();
+    if(!note)return;
+    const idx=+idxStr;
+    const projId=sched[idx];
+    if(!projId)return;
+    const proj=getProject(projId);
+    if(!proj)return;
+    const[h,half]=blockToTime(idx);
+    entries.push({idx,proj,note,timeLabel:formatTime(h,half)});
+  });
+
+  entries.sort((a,b)=>a.idx-b.idx);
+
+  if(!entries.length){
+    sec.style.display='none';
+    return;
+  }
+  sec.style.display='';
+
+  entries.forEach(e=>{
+    const card=document.createElement('div');
+    card.className='today-note-card';
+    card.innerHTML=`<div class="today-note-header">
+      <div class="today-note-dot" style="background:${e.proj.color}"></div>
+      <div class="today-note-proj" style="color:${e.proj.color}">${e.proj.emoji} ${e.proj.name}</div>
+      <div class="today-note-time">${e.timeLabel}</div>
+    </div>
+    <div class="today-note-body">${e.note.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div>`;
+    card.onclick=()=>openNotesModal(e.idx);
+    list.appendChild(card);
+  });
+}
 
 function renderDayflowMini(){
   const mini=document.getElementById('dayflow-mini');mini.innerHTML='';
@@ -2128,8 +2226,92 @@ function renderNotesTab(){
 }
 
 // ════════════════════════════════════════════════════════════
-//  TABS & RENDER ALL
+//  EXPORT: NOTES → MARKDOWN
 // ════════════════════════════════════════════════════════════
+function buildNotesEntries(projId){
+  // Returns [{date, blockIdx, timeLabel, note, todos}] for a given project
+  const entries=[];
+  Object.entries(state.days).forEach(([ds,dayData])=>{
+    const sched=dayData.schedule||{};
+    const blockNotes=dayData.blockNotes||{};
+    Object.entries(blockNotes).forEach(([idxStr,bn])=>{
+      const idx=+idxStr;
+      const note=(bn.note||'').trim();
+      const todos=(bn.todos||[]);
+      if(!note&&!todos.length)return;
+      if(sched[idx]!==projId)return;
+      const[h,half]=blockToTime(idx);
+      entries.push({date:ds,blockIdx:idx,timeLabel:formatTime(h,half),note,todos});
+    });
+  });
+  return entries;
+}
+
+function exportNotesMarkdown(projId){
+  const proj=getProject(projId);
+  if(!proj)return;
+  const entries=buildNotesEntries(projId).sort((a,b)=>b.date.localeCompare(a.date)||b.blockIdx-a.blockIdx);
+  if(!entries.length){alert('No notes found for this project.');return;}
+
+  const lines=[];
+  lines.push(`# ${proj.emoji} ${proj.name} — Notes Log`);
+  lines.push(`*Exported ${new Date().toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'})}*`);
+  lines.push('');
+
+  // Group by year → month → day
+  const byYear={};
+  entries.forEach(e=>{
+    const[y,m,d]=e.date.split('-');
+    if(!byYear[y])byYear[y]={};
+    if(!byYear[y][m])byYear[y][m]=[];
+    byYear[y][m].push({...e,day:d});
+  });
+
+  Object.keys(byYear).sort((a,b)=>b-a).forEach(year=>{
+    lines.push(`# ${year}`);
+    lines.push('');
+    const months=byYear[year];
+    Object.keys(months).sort((a,b)=>b-a).forEach(month=>{
+      const monthName=new Date(`${year}-${month}-15`).toLocaleDateString('en-US',{month:'long'});
+      lines.push(`## ${monthName}`);
+      lines.push('');
+
+      // Group days within month
+      const byDay={};
+      months[month].forEach(e=>{if(!byDay[e.day])byDay[e.day]=[];byDay[e.day].push(e);});
+      Object.keys(byDay).sort((a,b)=>b-a).forEach(day=>{
+        const dateObj=new Date(`${year}-${month}-${day}T12:00:00`);
+        const dayLabel=dateObj.toLocaleDateString('en-US',{month:'long',day:'numeric'});
+        lines.push(`### ${dayLabel}`);
+        lines.push('');
+        byDay[day].forEach(e=>{
+          lines.push(`**${e.timeLabel}**`);
+          if(e.note){
+            lines.push('');
+            lines.push(e.note);
+          }
+          if(e.todos&&e.todos.length){
+            lines.push('');
+            e.todos.forEach(t=>{
+              lines.push(`- [${t.done?'x':' '}] ${t.text||''}`);
+            });
+          }
+          lines.push('');
+        });
+      });
+    });
+  });
+
+  const blob=new Blob([lines.join('\n')],{type:'text/markdown'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  const safeName=proj.name.toLowerCase().replace(/\s+/g,'-').replace(/[^a-z0-9-]/g,'');
+  a.download=`notes-${safeName}.md`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+
 function switchTab(tab){
   ui.tab=tab;
   document.querySelectorAll('.tab-btn').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));
@@ -2137,6 +2319,9 @@ function switchTab(tab){
   // Show date nav only on Plan tab
   const navRow=document.getElementById('nav-row');
   if(navRow)navRow.style.visibility=tab==='plan'?'visible':'hidden';
+  // Show export MD button only on Notes tab
+  const mdBtn=document.getElementById('export-notes-md-btn');
+  if(mdBtn)mdBtn.style.display=tab==='notes'?'':'none';
   if(tab==='stats')renderStats();
   if(tab==='today'){ui.currentDate=todayStr();renderTodayTab();}
   if(tab==='todos')renderTodosTab();
@@ -2232,6 +2417,9 @@ document.addEventListener('DOMContentLoaded',()=>{
 
   // Export/Import
   document.getElementById('export-btn').addEventListener('click',exportYaml);
+  document.getElementById('export-notes-md-btn').addEventListener('click',()=>{
+    if(ui.notesTabProjId)exportNotesMarkdown(ui.notesTabProjId);
+  });
   document.getElementById('import-btn').addEventListener('click',()=>document.getElementById('import-input').click());
   document.getElementById('import-input').addEventListener('change',e=>{
     const file=e.target.files[0];if(!file)return;
