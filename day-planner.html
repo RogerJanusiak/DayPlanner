@@ -144,9 +144,12 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Georgi
 #time-needle::before{content:'';position:absolute;left:-5px;top:-4px;width:10px;height:10px;border-radius:50%;background:var(--gold)}
 #time-needle-label{position:absolute;left:-58px;top:-8px;font-family:'DM Mono',monospace;font-size:9px;color:var(--gold);white-space:nowrap}
 /* assign dropdown */
-.dropdown{background:var(--bg3);border:1px solid var(--border2);border-radius:8px;padding:5px;position:absolute;z-index:300;min-width:155px;box-shadow:0 12px 40px rgba(0,0,0,.6);top:100%;right:0;margin-top:4px}
-.dropdown-item{display:flex;align-items:center;gap:8px;padding:6px 9px;border-radius:5px;cursor:pointer;font-family:'DM Mono',monospace;font-size:11px;transition:background .1s}
+.dropdown{background:var(--bg3);border:1px solid var(--border2);border-radius:8px;padding:5px;position:absolute;z-index:300;min-width:190px;box-shadow:0 12px 40px rgba(0,0,0,.6);top:100%;right:0;margin-top:4px}
+.dropdown-item{display:flex;align-items:center;gap:8px;padding:6px 9px;border-radius:5px;cursor:default;font-family:'DM Mono',monospace;font-size:11px;transition:background .1s}
 .dropdown-item:hover{background:var(--bg4)}
+.dd-dur-btn{background:none;border:1px solid var(--border2);color:var(--faint);padding:2px 7px;border-radius:3px;font-family:'DM Mono',monospace;font-size:9px;cursor:pointer;transition:all .1s;flex-shrink:0}
+.dd-dur-btn:hover{border-color:var(--muted);color:var(--text)}
+.dd-dur-btn.gold:hover{border-color:var(--gold);color:var(--gold)}
 
 /* Notes modal */
 #notes-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:500;align-items:center;justify-content:center}
@@ -415,6 +418,24 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Georgi
 .io-btn{background:none;border:1px solid var(--border2);color:var(--muted);padding:4px 10px;border-radius:5px;cursor:pointer;font-family:'DM Mono',monospace;font-size:10px;transition:all .15s}
 .io-btn:hover{border-color:var(--faint);color:var(--text)}
 #import-input{display:none}
+
+/* Importance stars */
+.importance-row{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+.importance-label{font-family:'DM Mono',monospace;font-size:9px;color:var(--muted);letter-spacing:.12em;text-transform:uppercase;flex-shrink:0}
+.star-picker{display:flex;gap:3px}
+.star-btn{background:none;border:none;cursor:pointer;font-size:18px;padding:1px 2px;line-height:1;color:var(--faint);transition:color .1s,transform .1s}
+.star-btn.active{color:var(--gold)}
+.star-btn:hover{color:var(--gold);transform:scale(1.2)}
+.clear-imp-btn{background:none;border:1px solid var(--border2);color:var(--faint);padding:2px 7px;border-radius:4px;font-family:'DM Mono',monospace;font-size:9px;cursor:pointer;transition:all .15s}
+.clear-imp-btn:hover{border-color:var(--red);color:var(--red)}
+
+/* Notes tab filter bar */
+#notes-tab-filter-bar{display:flex;gap:5px;flex-wrap:wrap;padding:14px 20px 8px;flex-shrink:0;border-bottom:1px solid var(--border)}
+.imp-filter-btn{background:none;border:1px solid var(--border2);color:var(--faint);padding:3px 10px;border-radius:4px;font-family:'DM Mono',monospace;font-size:10px;cursor:pointer;transition:all .15s;letter-spacing:.03em}
+.imp-filter-btn:hover{border-color:var(--muted);color:var(--text)}
+.imp-filter-btn.active{border-color:var(--gold);color:var(--gold);background:rgba(232,201,122,.08)}
+#notes-tab-log{flex:1;overflow-y:auto;padding:16px 26px 20px}
+.notes-log-imp-stars{font-size:13px;letter-spacing:2px;color:var(--gold);margin-bottom:6px}
 </style>
 </head>
 <body>
@@ -665,7 +686,10 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Georgi
   <div class="tab-panel" id="notes-panel">
     <div id="notes-tab-inner">
       <div id="notes-tab-proj-list"></div>
-      <div id="notes-tab-log"></div>
+      <div style="flex:1;display:flex;flex-direction:column;overflow:hidden">
+        <div id="notes-tab-filter-bar"></div>
+        <div id="notes-tab-log"></div>
+      </div>
     </div>
   </div>
 
@@ -691,6 +715,17 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Georgi
       <button id="notes-close">✕</button>
     </div>
     <div id="notes-modal-body">
+      <div class="importance-row">
+        <span class="importance-label">IMPORTANCE</span>
+        <div class="star-picker" id="star-picker">
+          <button class="star-btn" data-val="1">★</button>
+          <button class="star-btn" data-val="2">★</button>
+          <button class="star-btn" data-val="3">★</button>
+          <button class="star-btn" data-val="4">★</button>
+          <button class="star-btn" data-val="5">★</button>
+        </div>
+        <button class="clear-imp-btn" id="clear-imp-btn">clear</button>
+      </div>
       <div class="notes-section-label">Notes</div>
       <textarea id="notes-textarea" placeholder="Context, goals, or anything for this block…"></textarea>
       <div class="notes-section-label notes-gap">To-do list</div>
@@ -747,6 +782,7 @@ let ui={
   dragProjId:null,       // project-from-sidebar drag
   openProjTodosId:null,  // which project todos group is expanded
   notesTabProjId:null,   // selected project in Notes tab
+  notesTabImportanceFilter:0, // 0=All, 1-5=exact star rating
   focusBlock:null,       // block idx shown in focus view
 };
 
@@ -1016,6 +1052,7 @@ function toYaml(){
       noteEntries.forEach(([idx,n])=>{
         const[h,half]=blockToTime(+idx);
         L.push(`      ${idx}:  # ${formatTime(h,half)}`);
+        if(n.importance)L.push(`        importance: ${n.importance}`);
         if((n.note||'').trim())L.push(`        note: ${yStr(n.note)}`);
         if((n.todos||[]).length){
           L.push('        todos:');
@@ -1163,6 +1200,8 @@ function parseYaml(text){
             if(trim==='projTodos:'){inNoteSection='projTodos';continue;}
             const nm=trim.match(/^note:\s*"([^"]*)"/);
             if(nm){result.days[curDay].blockNotes[curNoteIdx].note=nm[1].replace(/\\n/g,'\n');continue;}
+            const im=trim.match(/^importance:\s*(\d)/);
+            if(im){result.days[curDay].blockNotes[curNoteIdx].importance=+im[1];continue;}
           }
           if(inNoteSection==='todos'&&indent===10){
             if(trim.startsWith('- id:')){
@@ -1243,7 +1282,7 @@ function tickTimer(){
     hideBlockFocus();
     renderAll();return;
   }
-  renderTimerCard();renderDayflowMini();renderGamePanel();
+  renderTimerCard();renderDayflowMini();renderGamePanel();renderPlanBanner();
 }
 function pauseResumeTimer(){
   if(ui.timerRunning){
@@ -1275,6 +1314,13 @@ function completeBlock(idx){
 // ════════════════════════════════════════════════════════════
 function assignBlock(blockIdx,projId){
   const day=currentDayData();day.schedule[blockIdx]=projId;setDay(ui.currentDate,day);save();
+  closeDropdown();renderScheduleGrid();renderSidebar();renderTodayTab();renderHeaderStats();
+}
+function assignBlock1hr(blockIdx,projId){
+  const day=currentDayData();
+  day.schedule[blockIdx]=projId;
+  if(blockIdx+1<=35)day.schedule[blockIdx+1]=projId;
+  setDay(ui.currentDate,day);save();
   closeDropdown();renderScheduleGrid();renderSidebar();renderTodayTab();renderHeaderStats();
 }
 function clearBlock(blockIdx){
@@ -1337,6 +1383,20 @@ function openNotesModal(blockIdx,ds){
   document.getElementById('notes-modal-proj').style.color=proj?proj.color:'var(--text)';
   document.getElementById('notes-modal-time').textContent=formatTime(h,half);
   document.getElementById('notes-textarea').value=ex.note||'';
+  // Importance stars
+  const impVal=ex.importance||0;
+  function updateStars(val){
+    document.querySelectorAll('#star-picker .star-btn').forEach(b=>b.classList.toggle('active',+b.dataset.val<=val));
+  }
+  updateStars(impVal);
+  document.querySelectorAll('#star-picker .star-btn').forEach(btn=>{
+    btn.onclick=()=>{
+      const cur=[...document.querySelectorAll('#star-picker .star-btn')].filter(b=>b.classList.contains('active')).length;
+      const newVal=(cur===+btn.dataset.val)?0:+btn.dataset.val;
+      updateStars(newVal);
+    };
+  });
+  document.getElementById('clear-imp-btn').onclick=()=>updateStars(0);
   renderTodoList(ex.todos||[]);
   renderBlockProjTodos(proj?.id,blockIdx,ui.notesDate);
   document.getElementById('notes-overlay').classList.add('open');
@@ -1360,10 +1420,11 @@ function saveNotesModal(){
     text:item.querySelector('.todo-text').value,
     done:item.querySelector('.todo-cb').checked
   }));
+  const importance=[...document.querySelectorAll('#star-picker .star-btn')].filter(b=>b.classList.contains('active')).length||null;
   const day=getDay(ds);if(!day.blockNotes)day.blockNotes={};
   // Preserve projTodos if they exist
   const existingProjTodos=(day.blockNotes[blockIdx]||{}).projTodos||[];
-  day.blockNotes[blockIdx]={note,todos,projTodos:existingProjTodos};
+  day.blockNotes[blockIdx]={note,todos,projTodos:existingProjTodos,importance};
   setDay(ds,day);save();closeNotesModal();renderScheduleGrid();renderTodayTab();
 }
 function closeNotesModal(){document.getElementById('notes-overlay').classList.remove('open');ui.notesBlockIdx=null;ui.notesDate=null}
@@ -1800,8 +1861,20 @@ function openDropdown(blockIdx){
   const dd=document.createElement('div');dd.className='dropdown';dd.id=`dd-${blockIdx}`;
   state.projects.forEach(p=>{
     const item=document.createElement('div');item.className='dropdown-item';item.style.color=p.color;
-    item.innerHTML=`<span>${p.emoji}</span><span>${p.name}</span>`;
-    item.onclick=e=>{e.stopPropagation();assignBlock(blockIdx,p.id);};
+    // Project name (left, fills space)
+    const nameSpan=document.createElement('span');nameSpan.style.flex='1';
+    nameSpan.textContent=`${p.emoji} ${p.name}`;
+    item.appendChild(nameSpan);
+    // 30m button
+    const btn30=document.createElement('button');btn30.className='dd-dur-btn';btn30.textContent='30m';
+    btn30.onclick=e=>{e.stopPropagation();assignBlock(blockIdx,p.id);};
+    item.appendChild(btn30);
+    // 1h button (only if next slot exists)
+    if(blockIdx+1<=35){
+      const btn1h=document.createElement('button');btn1h.className='dd-dur-btn gold';btn1h.textContent='1h';
+      btn1h.onclick=e=>{e.stopPropagation();assignBlock1hr(blockIdx,p.id);};
+      item.appendChild(btn1h);
+    }
     dd.appendChild(item);
   });
   anchor.appendChild(dd);
@@ -1823,22 +1896,23 @@ function updateTimeneedle(){
   document.getElementById('time-needle-label').textContent=`${hr}:${mn} ${ap}`;
 }
 
-function renderScheduleGrid(){
-  // Plan tab active block banner
+function renderPlanBanner(){
   const planBanner=document.getElementById('plan-active-banner');
   const planBannerName=document.getElementById('plan-active-banner-name');
   const planBannerBtn=document.getElementById('plan-active-banner-btn');
-  if(planBanner){
-    if(ui.activeBlock!==null&&isToday()){
-      const proj=getProject((currentDayData().schedule||{})[ui.activeBlock]);
-      const[bh,bhalf]=blockToTime(ui.activeBlock);
-      if(planBannerName)planBannerName.textContent=`● Active: ${proj?`${proj.emoji} ${proj.name}`:'block'} · ${formatTime(bh,bhalf)} · ${formatSecs(getTimerRemaining())} remaining`;
-      planBanner.style.display='block';
-      if(planBannerBtn)planBannerBtn.onclick=()=>{switchTab('today');showBlockFocus(ui.activeBlock);};
-    } else {
-      planBanner.style.display='none';
-    }
+  if(!planBanner)return;
+  if(ui.activeBlock!==null&&isToday()){
+    const proj=getProject((currentDayData().schedule||{})[ui.activeBlock]);
+    const[bh,bhalf]=blockToTime(ui.activeBlock);
+    if(planBannerName)planBannerName.textContent=`● Active: ${proj?`${proj.emoji} ${proj.name}`:'block'} · ${formatTime(bh,bhalf)} · ${formatSecs(getTimerRemaining())} remaining`;
+    planBanner.style.display='block';
+    if(planBannerBtn)planBannerBtn.onclick=()=>{switchTab('today');showBlockFocus(ui.activeBlock);};
+  } else {
+    planBanner.style.display='none';
   }
+}
+function renderScheduleGrid(){
+  renderPlanBanner();
   const grid=document.getElementById('schedule-grid');grid.innerHTML='';
   const day=currentDayData(),sched=day.schedule||{},done=new Set(day.completed||[]);
   const readOnly=false;
@@ -2403,7 +2477,7 @@ function renderNotesTab(){
   const logEl=document.getElementById('notes-tab-log');
   if(!projList||!logEl)return;
 
-  // Build a map: projId -> [{date, blockIdx, timeLabel, note, todos}]
+  // Build a map: projId -> [{date, blockIdx, timeLabel, note, todos, importance}]
   const projEntries={};
   Object.entries(state.days).forEach(([ds,dayData])=>{
     const sched=dayData.schedule||{};
@@ -2417,7 +2491,7 @@ function renderNotesTab(){
       if(!projId)return;
       if(!projEntries[projId])projEntries[projId]=[];
       const[h,half]=blockToTime(idx);
-      projEntries[projId].push({date:ds,blockIdx:idx,timeLabel:formatTime(h,half),note,todos});
+      projEntries[projId].push({date:ds,blockIdx:idx,timeLabel:formatTime(h,half),note,todos,importance:bn.importance||null});
     });
   });
 
@@ -2445,6 +2519,20 @@ function renderNotesTab(){
     projList.appendChild(btn);
   });
 
+  // Render filter bar
+  const filterBar=document.getElementById('notes-tab-filter-bar');
+  if(filterBar){
+    filterBar.innerHTML='';
+    const filterLabels=['All','★','★★','★★★','★★★★','★★★★★'];
+    filterLabels.forEach((lbl,i)=>{
+      const btn=document.createElement('button');
+      btn.className='imp-filter-btn'+(ui.notesTabImportanceFilter===i?' active':'');
+      btn.textContent=lbl;
+      btn.onclick=()=>{ui.notesTabImportanceFilter=i;renderNotesTab();};
+      filterBar.appendChild(btn);
+    });
+  }
+
   // Render log for selected project
   logEl.innerHTML='';
   if(!ui.notesTabProjId){
@@ -2452,10 +2540,16 @@ function renderNotesTab(){
     return;
   }
   const proj=getProject(ui.notesTabProjId);
-  const entries=(projEntries[ui.notesTabProjId]||[]).slice().sort((a,b)=>b.date.localeCompare(a.date)||b.blockIdx-a.blockIdx);
+  const allEntries=(projEntries[ui.notesTabProjId]||[]).slice().sort((a,b)=>b.date.localeCompare(a.date)||b.blockIdx-a.blockIdx);
+  const entries=ui.notesTabImportanceFilter===0
+    ? allEntries
+    : allEntries.filter(e=>(e.importance||0)===ui.notesTabImportanceFilter);
 
   if(!entries.length){
-    logEl.innerHTML='<div class="notes-log-empty">No notes for this project yet.</div>';
+    const msg=ui.notesTabImportanceFilter>0
+      ?`<div class="notes-log-empty">No ${'★'.repeat(ui.notesTabImportanceFilter)} notes for this project.</div>`
+      :'<div class="notes-log-empty">No notes for this project yet.</div>';
+    logEl.innerHTML=msg;
     return;
   }
 
@@ -2481,6 +2575,7 @@ function renderNotesTab(){
           <div class="notes-log-entry-proj-dot" style="background:${proj.color}"></div>
           <span style="color:${proj.color}">${proj.emoji} ${proj.name}</span>
         </div>
+        ${e.importance?`<div class="notes-log-imp-stars" title="Importance: ${e.importance}/5">${'★'.repeat(e.importance)}${'☆'.repeat(5-e.importance)}</div>`:''}
       </div>`;
       if(e.note){
         html+=`<div class="notes-log-note-text" contenteditable="true" data-date="${e.date}" data-idx="${e.blockIdx}" spellcheck="false" style="outline:none;cursor:text;border-radius:6px;padding:4px 6px;transition:background .15s" onmouseenter="this.style.background='var(--bg3)'" onmouseleave="if(document.activeElement!==this)this.style.background=''" onfocus="this.style.background='var(--bg3)';this.style.border='1px solid var(--purple)';this.style.margin='-1px'" onblur="saveInlineNote(this)" >${e.note.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div>`;
