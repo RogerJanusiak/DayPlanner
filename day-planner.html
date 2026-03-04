@@ -341,6 +341,35 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Georgi
 
 /* IO Bar */
 #io-bar{border-top:1px solid var(--border);padding:7px 16px;display:flex;gap:6px;align-items:center;flex-shrink:0}
+
+/* Notes Tab */
+#notes-panel{padding:0;flex-direction:row;overflow:hidden}
+#notes-tab-inner{display:flex;flex:1;overflow:hidden}
+#notes-tab-proj-list{width:210px;flex-shrink:0;border-right:1px solid var(--border);overflow-y:auto;padding:16px 11px}
+.notes-tab-proj-btn{display:flex;align-items:center;gap:8px;width:100%;background:none;border:1px solid transparent;color:var(--muted);padding:7px 10px;border-radius:8px;cursor:pointer;font-family:'DM Mono',monospace;font-size:11px;transition:all .15s;margin-bottom:3px;text-align:left}
+.notes-tab-proj-btn:hover{background:var(--bg3);color:var(--text)}
+.notes-tab-proj-btn.active{background:var(--bg3);border-color:var(--border2);color:var(--text)}
+.notes-tab-proj-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+.notes-tab-proj-name{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.notes-tab-proj-count{font-size:9px;color:var(--faint);flex-shrink:0}
+#notes-tab-log{flex:1;overflow-y:auto;padding:20px 26px}
+.notes-log-empty{font-family:'DM Mono',monospace;font-size:11px;color:var(--faint);text-align:center;margin-top:60px}
+.notes-log-date-group{margin-bottom:28px}
+.notes-log-date-header{font-family:'DM Mono',monospace;font-size:9px;color:var(--muted);letter-spacing:.14em;text-transform:uppercase;margin-bottom:10px;display:flex;align-items:center;gap:10px}
+.notes-log-date-line{flex:1;height:1px;background:var(--border)}
+.notes-log-entry{background:var(--bg2);border:1px solid var(--border);border-radius:11px;padding:13px 15px;margin-bottom:8px;transition:border-color .15s}
+.notes-log-entry:hover{border-color:var(--border2)}
+.notes-log-entry-header{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.notes-log-entry-time{font-family:'DM Mono',monospace;font-size:10px;color:var(--faint);flex-shrink:0}
+.notes-log-entry-proj{display:flex;align-items:center;gap:6px;font-family:'DM Mono',monospace;font-size:11px;font-weight:500}
+.notes-log-entry-proj-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
+.notes-log-note-text{font-family:'DM Mono',monospace;font-size:11px;color:var(--text);line-height:1.75;white-space:pre-wrap;word-break:break-word}
+.notes-log-todos{margin-top:8px;padding-top:8px;border-top:1px solid var(--border)}
+.notes-log-todos-label{font-family:'DM Mono',monospace;font-size:9px;color:var(--faint);letter-spacing:.1em;margin-bottom:5px}
+.notes-log-todo-item{display:flex;align-items:center;gap:7px;font-family:'DM Mono',monospace;font-size:10px;color:var(--muted);padding:2px 0}
+.notes-log-todo-item.done{color:var(--faint);text-decoration:line-through}
+.notes-log-todo-dot{width:5px;height:5px;border-radius:50%;background:var(--faint);flex-shrink:0}
+.notes-log-todo-dot.done{background:var(--green);opacity:.6}
 #io-bar-label{font-family:'DM Mono',monospace;font-size:9px;color:var(--faint);letter-spacing:.1em;flex:1}
 .io-btn{background:none;border:1px solid var(--border2);color:var(--muted);padding:4px 10px;border-radius:5px;cursor:pointer;font-family:'DM Mono',monospace;font-size:10px;transition:all .15s}
 .io-btn:hover{border-color:var(--faint);color:var(--text)}
@@ -369,6 +398,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Georgi
       <button class="tab-btn" data-tab="today">Today</button>
       <button class="tab-btn" data-tab="todos">Todos</button>
       <button class="tab-btn" data-tab="stats">Stats</button>
+      <button class="tab-btn" data-tab="notes">Notes</button>
     </div>
     <div id="nav-row" style="display:flex;align-items:center;gap:6px;padding-bottom:2px">
       <button class="nav-arr" id="nav-prev">&#8592;</button>
@@ -554,6 +584,14 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Georgi
     </div>
   </div>
 
+  <!-- NOTES TAB -->
+  <div class="tab-panel" id="notes-panel">
+    <div id="notes-tab-inner">
+      <div id="notes-tab-proj-list"></div>
+      <div id="notes-tab-log"></div>
+    </div>
+  </div>
+
 </div><!-- #main -->
 </div><!-- #body -->
 
@@ -629,6 +667,7 @@ let ui={
   dragSrcIdx:null,       // block-to-block drag
   dragProjId:null,       // project-from-sidebar drag
   openProjTodosId:null,  // which project todos group is expanded
+  notesTabProjId:null,   // selected project in Notes tab
 };
 
 // ════════════════════════════════════════════════════════════
@@ -1982,6 +2021,113 @@ function renderStats(){
 }
 
 // ════════════════════════════════════════════════════════════
+//  RENDER: NOTES TAB
+// ════════════════════════════════════════════════════════════
+function renderNotesTab(){
+  const projList=document.getElementById('notes-tab-proj-list');
+  const logEl=document.getElementById('notes-tab-log');
+  if(!projList||!logEl)return;
+
+  // Build a map: projId -> [{date, blockIdx, timeLabel, note, todos}]
+  const projEntries={};
+  Object.entries(state.days).forEach(([ds,dayData])=>{
+    const sched=dayData.schedule||{};
+    const blockNotes=dayData.blockNotes||{};
+    Object.entries(blockNotes).forEach(([idxStr,bn])=>{
+      const idx=+idxStr;
+      const note=(bn.note||'').trim();
+      const todos=(bn.todos||[]);
+      if(!note&&!todos.length)return;
+      const projId=sched[idx];
+      if(!projId)return;
+      if(!projEntries[projId])projEntries[projId]=[];
+      const[h,half]=blockToTime(idx);
+      projEntries[projId].push({date:ds,blockIdx:idx,timeLabel:formatTime(h,half),note,todos});
+    });
+  });
+
+  // Collect projects that have notes, sort by note count desc
+  const projs=state.projects.filter(p=>projEntries[p.id]&&projEntries[p.id].length);
+
+  // Determine selected project
+  if(!ui.notesTabProjId||!projEntries[ui.notesTabProjId]){
+    ui.notesTabProjId=projs.length?projs[0].id:null;
+  }
+
+  // Render project list
+  projList.innerHTML='<div class="section-label" style="margin-bottom:10px">Projects</div>';
+  if(!projs.length){
+    projList.innerHTML+='<div style="font-family:\'DM Mono\',monospace;font-size:10px;color:var(--faint);padding:6px 4px">No notes yet.<br>Add notes to blocks in the Plan tab.</div>';
+  }
+  projs.forEach(p=>{
+    const count=projEntries[p.id].length;
+    const btn=document.createElement('button');
+    btn.className='notes-tab-proj-btn'+(p.id===ui.notesTabProjId?' active':'');
+    btn.innerHTML=`<div class="notes-tab-proj-dot" style="background:${p.color}"></div>
+      <span class="notes-tab-proj-name">${p.emoji} ${p.name}</span>
+      <span class="notes-tab-proj-count">${count}</span>`;
+    btn.onclick=()=>{ui.notesTabProjId=p.id;renderNotesTab();};
+    projList.appendChild(btn);
+  });
+
+  // Render log for selected project
+  logEl.innerHTML='';
+  if(!ui.notesTabProjId){
+    logEl.innerHTML='<div class="notes-log-empty">No notes found.<br>Write notes on blocks in the Plan tab.</div>';
+    return;
+  }
+  const proj=getProject(ui.notesTabProjId);
+  const entries=(projEntries[ui.notesTabProjId]||[]).slice().sort((a,b)=>b.date.localeCompare(a.date)||b.blockIdx-a.blockIdx);
+
+  if(!entries.length){
+    logEl.innerHTML='<div class="notes-log-empty">No notes for this project yet.</div>';
+    return;
+  }
+
+  // Group by date
+  const byDate={};
+  entries.forEach(e=>{
+    if(!byDate[e.date])byDate[e.date]=[];
+    byDate[e.date].push(e);
+  });
+
+  Object.entries(byDate).sort((a,b)=>b[0].localeCompare(a[0])).forEach(([ds,dayEntries])=>{
+    const group=document.createElement('div');
+    group.className='notes-log-date-group';
+    const dateLabel=formatDateLabel(ds);
+    group.innerHTML=`<div class="notes-log-date-header"><span>${dateLabel}</span><div class="notes-log-date-line"></div></div>`;
+
+    dayEntries.forEach(e=>{
+      const card=document.createElement('div');
+      card.className='notes-log-entry';
+      let html=`<div class="notes-log-entry-header">
+        <div class="notes-log-entry-time">${e.timeLabel}</div>
+        <div class="notes-log-entry-proj">
+          <div class="notes-log-entry-proj-dot" style="background:${proj.color}"></div>
+          <span style="color:${proj.color}">${proj.emoji} ${proj.name}</span>
+        </div>
+      </div>`;
+      if(e.note){
+        html+=`<div class="notes-log-note-text">${e.note.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div>`;
+      }
+      if(e.todos.length){
+        html+=`<div class="notes-log-todos"><div class="notes-log-todos-label">TO-DOS</div>`;
+        e.todos.forEach(t=>{
+          html+=`<div class="notes-log-todo-item${t.done?' done':''}">
+            <div class="notes-log-todo-dot${t.done?' done':''}"></div>
+            <span>${(t.text||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</span>
+          </div>`;
+        });
+        html+=`</div>`;
+      }
+      card.innerHTML=html;
+      group.appendChild(card);
+    });
+    logEl.appendChild(group);
+  });
+}
+
+// ════════════════════════════════════════════════════════════
 //  TABS & RENDER ALL
 // ════════════════════════════════════════════════════════════
 function switchTab(tab){
@@ -1994,6 +2140,7 @@ function switchTab(tab){
   if(tab==='stats')renderStats();
   if(tab==='today'){ui.currentDate=todayStr();renderTodayTab();}
   if(tab==='todos')renderTodosTab();
+  if(tab==='notes')renderNotesTab();
   if(tab==='plan')setTimeout(updateTimeneedle,50);
 }
 function renderAll(){
@@ -2006,6 +2153,7 @@ function renderAll(){
   else renderTimerCard();
   if(ui.tab==='stats')renderStats();
   if(ui.tab==='todos')renderTodosTab();
+  if(ui.tab==='notes')renderNotesTab();
 }
 function startClockTick(){
   clearInterval(ui.clockInterval);
