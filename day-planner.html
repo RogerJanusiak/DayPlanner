@@ -491,6 +491,12 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Georgi
 
   <!-- PLAN TAB -->
   <div class="tab-panel active" id="plan-panel">
+    <div id="plan-active-banner" style="display:none;padding:8px 18px 0">
+      <div id="plan-active-banner-inner" style="background:rgba(232,201,122,.1);border:1px solid rgba(232,201,122,.4);border-radius:8px;padding:8px 14px;display:flex;align-items:center;gap:10px;margin-bottom:8px">
+        <span id="plan-active-banner-name" style="font-family:'DM Mono',monospace;font-size:11px;color:var(--gold);flex:1"></span>
+        <button id="plan-active-banner-btn" style="background:var(--gold);color:var(--bg);border:none;padding:5px 13px;border-radius:5px;font-family:'DM Mono',monospace;font-size:10px;font-weight:500;cursor:pointer;white-space:nowrap;transition:opacity .15s" onmouseenter="this.style.opacity='.85'" onmouseleave="this.style.opacity='1'">→ Open Focus View</button>
+      </div>
+    </div>
     <div class="schedule-wrap" id="schedule-wrap">
       <div id="time-needle" style="display:none"><div id="time-needle-label"></div></div>
       <div id="schedule-grid"></div>
@@ -557,6 +563,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Georgi
           </div>
           <div class="game-bar-track"><div id="decay-bar-fill" class="game-bar-fill" style="background:var(--purple);width:100%"></div></div>
           <div style="font-family:'DM Mono',monospace;font-size:8px;color:var(--faint);margin-top:3px" id="decay-hint">Fades each day without hitting your goal</div>
+          <div style="font-family:'DM Mono',monospace;font-size:8px;color:var(--faint);margin-top:2px;line-height:1.6">Goal met: <span style="color:var(--green)">+5</span> · Goal missed: <span style="color:var(--red)">−10</span> · Weekdays only · Max 100</div>
         </div>
       </div>
       <!-- Mini schedule list -->
@@ -587,6 +594,9 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Georgi
     <!-- Timeline -->
     <div id="today-timeline">
       <div id="today-timeline-label">Today's Flow</div>
+      <div id="return-to-focus-banner" style="display:none;margin-bottom:14px">
+        <button id="return-to-focus-btn" style="background:rgba(232,201,122,.12);border:1px solid rgba(232,201,122,.5);color:var(--gold);padding:9px 16px;border-radius:8px;font-family:'DM Mono',monospace;font-size:11px;cursor:pointer;width:100%;text-align:left;letter-spacing:.04em;transition:all .15s" onmouseenter="this.style.background='rgba(232,201,122,.2)'" onmouseleave="this.style.background='rgba(232,201,122,.12)'">↩ Return to Active Block Focus View</button>
+      </div>
       <div id="timeline-list"></div>
       <!-- Today Todos -->
       <div id="today-todos-section">
@@ -721,7 +731,8 @@ let state={
   ],
   days:{},
   settings:{dailyGoal:8},
-  projectTodos:{}
+  projectTodos:{},
+  timerState:{activeBlock:null,startedAt:null,elapsedMs:0,date:null}
   // projectTodos[projId] = [{id, text, done, doneDate, history:[{date, type:'done'|'progress', blockIdx}]}]
 };
 let ui={
@@ -882,6 +893,42 @@ function load(){
   ensureForwardDays();
   save(); // persist the newly generated days
 }
+// Restore timer state after page load/refresh
+function restoreTimerState(){
+  const ts=state.timerState;
+  if(!ts||ts.activeBlock===null||ts.activeBlock===undefined)return;
+  if(ts.date!==todayStr()){
+    // Timer was from a different day — discard silently
+    state.timerState={activeBlock:null,startedAt:null,elapsedMs:0,date:null};
+    save();return;
+  }
+  // Calculate total elapsed ms (accumulated + time since startedAt if was running)
+  let totalElapsed=ts.elapsedMs||0;
+  if(ts.startedAt){totalElapsed+=Date.now()-ts.startedAt;}
+  if(totalElapsed>=30*60*1000){
+    // Block should be auto-completed
+    const blockIdx=ts.activeBlock;
+    const ds=ts.date;
+    const day=getDay(ds);
+    if(!day.completed.includes(blockIdx)){day.completed.push(blockIdx);setDay(ds,day);}
+    state.timerState={activeBlock:null,startedAt:null,elapsedMs:0,date:null};
+    save();
+    console.log('[Timer] Auto-completed block',blockIdx,'(timer expired while away)');
+  } else {
+    // Resume timer from where we left off
+    ui.activeBlock=ts.activeBlock;
+    ui.timerElapsedMs=totalElapsed;
+    ui.timerStartedAt=Date.now();
+    ui.timerRunning=true;
+    // Update persisted state with fresh startedAt
+    state.timerState={activeBlock:ts.activeBlock,startedAt:Date.now(),elapsedMs:totalElapsed,date:ts.date};
+    save();
+    ui.timerInterval=setInterval(tickTimer,500);
+    // focusBlock will be shown after renderAll() in init
+    ui.focusBlock=ts.activeBlock;
+  }
+}
+
 // Get or auto-init a day, setting timeOff=true for weekends by default
 function getDay(ds){
   if(!state.days[ds]){
@@ -1179,6 +1226,8 @@ function startTimer(blockIdx){
   clearInterval(ui.timerInterval);
   requestNotifPermission();
   ui.activeBlock=blockIdx;ui.timerElapsedMs=0;ui.timerStartedAt=Date.now();ui.timerRunning=true;
+  state.timerState={activeBlock:blockIdx,startedAt:ui.timerStartedAt,elapsedMs:0,date:todayStr()};
+  save();
   ui.timerInterval=setInterval(tickTimer,500);
   switchTab('today');
   showBlockFocus(blockIdx);
@@ -1188,6 +1237,8 @@ function tickTimer(){
     const proj=getProject((currentDayData().schedule||{})[ui.activeBlock]);
     completeBlock(ui.activeBlock);clearInterval(ui.timerInterval);
     ui.timerRunning=false;ui.timerElapsedMs=0;ui.timerStartedAt=null;ui.activeBlock=null;
+    state.timerState={activeBlock:null,startedAt:null,elapsedMs:0,date:null};
+    save();
     fireTimerNotification(proj?`${proj.emoji} ${proj.name}`:'');
     hideBlockFocus();
     renderAll();return;
@@ -1195,14 +1246,22 @@ function tickTimer(){
   renderTimerCard();renderDayflowMini();renderGamePanel();
 }
 function pauseResumeTimer(){
-  if(ui.timerRunning){ui.timerElapsedMs+=Date.now()-ui.timerStartedAt;ui.timerStartedAt=null;ui.timerRunning=false;clearInterval(ui.timerInterval);}
-  else{ui.timerStartedAt=Date.now();ui.timerRunning=true;ui.timerInterval=setInterval(tickTimer,500);}
+  if(ui.timerRunning){
+    ui.timerElapsedMs+=Date.now()-ui.timerStartedAt;ui.timerStartedAt=null;ui.timerRunning=false;clearInterval(ui.timerInterval);
+    state.timerState={...state.timerState,startedAt:null,elapsedMs:ui.timerElapsedMs};
+  } else {
+    ui.timerStartedAt=Date.now();ui.timerRunning=true;ui.timerInterval=setInterval(tickTimer,500);
+    state.timerState={...state.timerState,startedAt:ui.timerStartedAt};
+  }
+  save();
   renderTimerCard();
 }
 function doneTimer(){
   if(ui.activeBlock!==null)completeBlock(ui.activeBlock);
   clearInterval(ui.timerInterval);
   ui.activeBlock=null;ui.timerRunning=false;ui.timerElapsedMs=0;ui.timerStartedAt=null;
+  state.timerState={activeBlock:null,startedAt:null,elapsedMs:0,date:null};
+  save();
   hideBlockFocus();
   renderAll();
 }
@@ -1765,6 +1824,21 @@ function updateTimeneedle(){
 }
 
 function renderScheduleGrid(){
+  // Plan tab active block banner
+  const planBanner=document.getElementById('plan-active-banner');
+  const planBannerName=document.getElementById('plan-active-banner-name');
+  const planBannerBtn=document.getElementById('plan-active-banner-btn');
+  if(planBanner){
+    if(ui.activeBlock!==null&&isToday()){
+      const proj=getProject((currentDayData().schedule||{})[ui.activeBlock]);
+      const[bh,bhalf]=blockToTime(ui.activeBlock);
+      if(planBannerName)planBannerName.textContent=`● Active: ${proj?`${proj.emoji} ${proj.name}`:'block'} · ${formatTime(bh,bhalf)} · ${formatSecs(getTimerRemaining())} remaining`;
+      planBanner.style.display='block';
+      if(planBannerBtn)planBannerBtn.onclick=()=>{switchTab('today');showBlockFocus(ui.activeBlock);};
+    } else {
+      planBanner.style.display='none';
+    }
+  }
   const grid=document.getElementById('schedule-grid');grid.innerHTML='';
   const day=currentDayData(),sched=day.schedule||{},done=new Set(day.completed||[]);
   const readOnly=false;
@@ -1942,6 +2016,13 @@ function hideBlockFocus(){
   ui.focusBlock=null;
   document.getElementById('today-timeline').classList.remove('hidden');
   document.getElementById('block-focus-view').classList.remove('active');
+  // Show return banner if there's still an active block running
+  const returnBanner=document.getElementById('return-to-focus-banner');
+  const returnBtn=document.getElementById('return-to-focus-btn');
+  if(returnBanner){
+    returnBanner.style.display=ui.activeBlock!==null?'block':'none';
+    if(returnBtn)returnBtn.onclick=()=>showBlockFocus(ui.activeBlock);
+  }
 }
 function renderBlockFocus(){
   const blockIdx=ui.focusBlock;
@@ -2084,6 +2165,14 @@ function renderDayflowMini(){
 }
 
 function renderTimeline(){
+  // Return-to-focus banner: show when active block exists but focus view is hidden
+  const returnBanner=document.getElementById('return-to-focus-banner');
+  const returnBtn=document.getElementById('return-to-focus-btn');
+  if(returnBanner){
+    const focusActive=document.getElementById('block-focus-view')?.classList.contains('active');
+    returnBanner.style.display=(ui.activeBlock!==null&&!focusActive)?'block':'none';
+    if(returnBtn)returnBtn.onclick=()=>showBlockFocus(ui.activeBlock);
+  }
   const list=document.getElementById('timeline-list');list.innerHTML='';
   const day=currentDayData(),sched=day.schedule||{},done=new Set(day.completed||[]);
   const entries=Object.entries(sched).map(([i,pid])=>({idx:+i,proj:getProject(pid)})).filter(e=>e.proj).sort((a,b)=>a.idx-b.idx);
@@ -2121,7 +2210,7 @@ function renderTimeline(){
           ${isCompleted
             ? `<button class="tl-undo-btn" data-undo="${idx}">✗ undo</button>`
             : isActive
-              ? `<span class="tl-status pulse" style="color:var(--gold)">● running</span>`
+              ? `<span class="tl-status pulse" style="color:var(--gold)">● active</span>`
               : `${isToday()&&ui.currentDate===todayStr()?`<button class="tl-start-btn" data-start="${idx}">▶ start</button>`:''}<button class="tl-done-btn" data-done="${idx}">✓ done</button>`
           }
         </div>
@@ -2563,7 +2652,13 @@ document.addEventListener('DOMContentLoaded',()=>{
       try{localStorage.setItem(STORAGE_KEY,JSON.stringify(state))}catch(e){}
     }
     ensureForwardDays();
+    restoreTimerState(); // restore timer before rendering so activeBlock/focusBlock are set
     renderAll();startClockTick();
+    // If timer was restored and focus block is set, switch to Today and show focus view
+    if(ui.timerRunning&&ui.focusBlock!==null){
+      switchTab('today');
+      showBlockFocus(ui.focusBlock);
+    }
   })();
 
   document.querySelectorAll('.tab-btn').forEach(btn=>btn.addEventListener('click',()=>switchTab(btn.dataset.tab)));
