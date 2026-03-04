@@ -788,7 +788,38 @@ function ensureForwardDays(){
     }
   }
 }
-function save(){try{localStorage.setItem(STORAGE_KEY,JSON.stringify(state))}catch(e){}}
+function save(){
+  try{localStorage.setItem(STORAGE_KEY,JSON.stringify(state))}catch(e){}
+  // Push YAML to local server (silently — no-op if server not running)
+  try{
+    const yaml=toYaml();
+    fetch('/save',{method:'POST',headers:{'Content-Type':'text/yaml'},body:yaml})
+      .then(r=>r.ok?setServerStatus('saved'):setServerStatus('error'))
+      .catch(()=>setServerStatus('offline'));
+  }catch(e){}
+}
+function setServerStatus(state){
+  const el=document.getElementById('io-bar-label');
+  if(!el)return;
+  const t=new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+  if(state==='saved')el.innerHTML=`Auto-saved to browser &amp; file &middot; last save ${t}`;
+  else if(state==='offline')el.textContent='Auto-saved to browser · Server offline — run server.js for file backup';
+  else el.textContent='Auto-saved to browser · File save error — check server.js';
+}
+async function loadFromServer(){
+  try{
+    const r=await fetch('/load');
+    if(r.status===204)return false; // no file yet
+    if(!r.ok)return false;
+    const text=await r.text();
+    const p=parseYaml(text);
+    if(p.projects.length)state.projects=p.projects;
+    if(p.settings&&p.settings.dailyGoal)state.settings.dailyGoal=p.settings.dailyGoal;
+    if(p.projectTodos&&Object.keys(p.projectTodos).length)state.projectTodos=p.projectTodos;
+    if(Object.keys(p.days).length)Object.assign(state.days,p.days);
+    return true;
+  }catch(e){return false;}
+}
 function load(){
   try{const r=localStorage.getItem(STORAGE_KEY);if(r)state=JSON.parse(r)}catch(e){}
   if(!state.settings)state.settings={dailyGoal:8};
@@ -2364,7 +2395,17 @@ function startClockTick(){
 //  INIT
 // ════════════════════════════════════════════════════════════
 document.addEventListener('DOMContentLoaded',()=>{
-  load();renderAll();startClockTick();
+  // Try loading from server file first (most up-to-date), fall back to localStorage
+  (async()=>{
+    load(); // seed from localStorage immediately so UI isn't blank
+    const fromServer=await loadFromServer();
+    if(fromServer){
+      // Merge server state into localStorage too
+      try{localStorage.setItem(STORAGE_KEY,JSON.stringify(state))}catch(e){}
+    }
+    ensureForwardDays();
+    renderAll();startClockTick();
+  })();
 
   document.querySelectorAll('.tab-btn').forEach(btn=>btn.addEventListener('click',()=>switchTab(btn.dataset.tab)));
 
@@ -2451,11 +2492,12 @@ document.addEventListener('DOMContentLoaded',()=>{
   // Redraw charts on resize
   window.addEventListener('resize',()=>{if(ui.tab==='stats')renderStats();});
 
-  // beforeunload — offer export
-  window.addEventListener('beforeunload',e=>{
-    if(!Object.keys(state.days).length)return;
-    e.preventDefault();e.returnValue='';
-    try{exportYaml();}catch(_){}
+  // beforeunload — do a final save to server
+  window.addEventListener('beforeunload',()=>{
+    try{
+      const yaml=toYaml();
+      navigator.sendBeacon('/save',new Blob([yaml],{type:'text/yaml'}));
+    }catch(_){}
   });
 });
 </script>
