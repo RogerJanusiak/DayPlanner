@@ -2480,7 +2480,10 @@ function renderTodayNotes(){
 function renderDayflowMini(){
   const mini=document.getElementById('dayflow-mini');mini.innerHTML='';
   const day=currentDayData(),sched=day.schedule||{},done=new Set(day.completed||[]);
-  const entries=Object.entries(sched).map(([i,pid])=>({idx:+i,proj:getProject(pid)})).filter(e=>e.proj).sort((a,b)=>a.idx-b.idx);
+  const blockSpan=day.blockSpan||{};
+  const spannedSlots=new Set();
+  Object.entries(blockSpan).forEach(([startIdx,span])=>{for(let i=1;i<span;i++)spannedSlots.add(+startIdx+i);});
+  const entries=Object.entries(sched).map(([i,pid])=>({idx:+i,proj:getProject(pid)})).filter(e=>e.proj&&!spannedSlots.has(e.idx)).sort((a,b)=>a.idx-b.idx);
   entries.forEach(({idx,proj})=>{
     const isCompleted=done.has(idx),isActive=ui.activeBlock===idx;
     const[h,half]=blockToTime(idx);
@@ -2537,13 +2540,15 @@ function renderTimeline(){
     const block=document.createElement('div');
     block.className='tl-block'+(isActive?' tl-active':'')+(isCompleted?' tl-done':'');
     block.id=`tl-block-${idx}`;
+    const span=blockSpan[idx]||1;
+    const durationBadge=span>=2?`<span class="block-1h-badge">1h</span>`:`<span class="block-1h-badge" style="opacity:.45">30m</span>`;
     let notePreview='',todoPreview='';
     if(notes){if((notes.note||'').trim())notePreview=notes.note.trim().replace(/\n/g,' ').slice(0,80);if((notes.todos||[]).length){const tot=notes.todos.length,dt=notes.todos.filter(t=>t.done).length;todoPreview=`${dt}/${tot} todos done`;}}
     block.innerHTML=`<div class="tl-accent" style="background:${proj.color};opacity:${isCompleted?.3:1}"></div>
       <div class="tl-inner">
         <div class="tl-time">${formatTime(h,half)}</div>
         <div class="tl-info">
-          <div class="tl-proj-name" style="color:${isCompleted?'var(--faint)':proj.color}">${proj.emoji} ${proj.name}</div>
+          <div class="tl-proj-name" style="color:${isCompleted?'var(--faint)':proj.color}">${proj.emoji} ${proj.name} ${durationBadge}</div>
           ${notePreview?`<div class="tl-note-preview">${notePreview}</div>`:''}
           ${todoPreview?`<div class="tl-todo-preview">📋 ${todoPreview}</div>`:''}
         </div>

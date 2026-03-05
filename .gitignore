@@ -9,3 +9,6 @@ nohup.out
 ._day-planner-backup.yaml
 ._.server.log
 ._.gitingnore
+.server.log
+.server.pid
+._.server.pid
