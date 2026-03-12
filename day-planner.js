@@ -68,6 +68,7 @@ let ui = {
   notesTabProjId: null, // selected project in Notes tab
   notesTabImportanceFilter: 0, // 0=All, 1-5=exact star rating
   focusBlock: null, // block idx shown in focus view
+  notesLivePreview: true,
 };
 
 // ════════════════════════════════════════════════════════════
@@ -1088,7 +1089,7 @@ function toggleTimeOff() {
 // ════════════════════════════════════════════════════════════
 //  NOTES MODAL
 // ════════════════════════════════════════════════════════════
-function openNotesModal(blockIdx, ds) {
+function openNotesModal(blockIdx, ds, notesOnly) {
   ui.notesBlockIdx = blockIdx;
   ui.notesDate = ds || ui.currentDate;
   const day = getDay(ui.notesDate),
@@ -1119,31 +1120,69 @@ function openNotesModal(blockIdx, ds) {
   });
   document.getElementById('clear-imp-btn').onclick = () => updateStars(0);
   // Markdown edit/preview setup
+  const modal = document.getElementById('notes-modal');
   const textarea = document.getElementById('notes-textarea');
   const preview = document.getElementById('notes-md-preview');
   const editBtn = document.getElementById('notes-mode-edit');
   const previewBtn = document.getElementById('notes-mode-preview');
+  const liveBtn = document.getElementById('notes-live-btn');
+  const editArea = document.getElementById('notes-edit-area');
+  const todoSections = [
+    document.querySelector('.notes-section-label.notes-gap'),
+    document.getElementById('todo-list'),
+    document.getElementById('add-todo-row'),
+    document.getElementById('block-proj-todos-section')
+  ];
 
-  function showEdit() {
-    textarea.style.display = '';
-    preview.style.display = 'none';
-    editBtn.classList.add('active');
-    previewBtn.classList.remove('active');
+  // Reset state
+  modal.classList.toggle('notes-only', !!notesOnly);
+  editArea.classList.remove('live');
+  textarea.oninput = null;
+  preview.onclick = null;
+
+  if (notesOnly) {
+    todoSections.forEach(el => el && (el.style.display = 'none'));
+    editBtn.style.display = 'none';
+    previewBtn.style.display = 'none';
+    liveBtn.style.display = '';
+    function updateLiveState() {
+      liveBtn.classList.toggle('active', ui.notesLivePreview);
+      liveBtn.textContent = ui.notesLivePreview ? 'HIDE PREVIEW' : 'SHOW PREVIEW';
+      editArea.classList.toggle('live', ui.notesLivePreview);
+      if (ui.notesLivePreview) preview.innerHTML = renderMarkdown(textarea.value);
+    }
+    updateLiveState();
+    textarea.oninput = () => { if (editArea.classList.contains('live')) preview.innerHTML = renderMarkdown(textarea.value); };
+    liveBtn.onclick = () => {
+      ui.notesLivePreview = !ui.notesLivePreview;
+      updateLiveState();
+    };
+  } else {
+    todoSections.forEach(el => el && (el.style.display = ''));
+    editBtn.style.display = '';
+    previewBtn.style.display = '';
+    liveBtn.style.display = 'none';
+    function showEdit() {
+      textarea.style.display = '';
+      preview.style.display = 'none';
+      editBtn.classList.add('active');
+      previewBtn.classList.remove('active');
+    }
+    function showPreview() {
+      preview.innerHTML = renderMarkdown(textarea.value);
+      textarea.style.display = 'none';
+      preview.style.display = 'block';
+      previewBtn.classList.add('active');
+      editBtn.classList.remove('active');
+    }
+    showEdit();
+    editBtn.onclick = showEdit;
+    previewBtn.onclick = showPreview;
+    preview.onclick = showEdit;
+    renderTodoList(ex.todos || []);
+    renderBlockProjTodos(proj?.id, blockIdx, ui.notesDate);
   }
 
-  function showPreview() {
-    preview.innerHTML = renderMarkdown(textarea.value);
-    textarea.style.display = 'none';
-    preview.style.display = 'block';
-    previewBtn.classList.add('active');
-    editBtn.classList.remove('active');
-  }
-  showEdit();
-  editBtn.onclick = showEdit;
-  previewBtn.onclick = showPreview;
-  preview.onclick = showEdit;
-  renderTodoList(ex.todos || []);
-  renderBlockProjTodos(proj?.id, blockIdx, ui.notesDate);
   document.getElementById('notes-overlay').classList.add('open');
   setTimeout(() => document.getElementById('notes-textarea').focus(), 50);
 }
@@ -1187,6 +1226,7 @@ function saveNotesModal() {
   closeNotesModal();
   renderScheduleGrid();
   renderTodayTab();
+  renderNotesTab();
 }
 
 function closeNotesModal() {
@@ -2267,15 +2307,22 @@ function renderGamePanel() {
 //  MARKDOWN RENDERER
 // ════════════════════════════════════════════════════════════
 function applyInlineMd(text) {
-  return text
+  // Extract code spans first so their contents aren't processed as markdown
+  const codespans = [];
+  text = text.replace(/`([^`]+)`/g, (_, inner) => {
+    const escaped = inner.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    codespans.push(`<code>${escaped}</code>`);
+    return `\x00${codespans.length - 1}\x00`;
+  });
+  text = text
     .replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>')
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/\*([^*\n]+?)\*/g, '<em>$1</em>')
     .replace(/__(.+?)__/g, '<strong>$1</strong>')
     .replace(/_([^_\n]+?)_/g, '<em>$1</em>')
     .replace(/~~(.+?)~~/g, '<span style="text-decoration:line-through;color:var(--faint)">$1</span>')
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+  return text.replace(/\x00(\d+)\x00/g, (_, i) => codespans[+i]);
 }
 
 function renderMarkdown(text) {
@@ -2283,7 +2330,9 @@ function renderMarkdown(text) {
   const lines = text.split('\n');
   const out = [];
   let inUl = false,
-    inOl = false;
+    inOl = false,
+    inCode = false,
+    codeLines = [];
   const closeList = () => {
     if (inUl) {
       out.push('</ul>');
@@ -2295,6 +2344,23 @@ function renderMarkdown(text) {
     }
   };
   lines.forEach(raw => {
+    // Fenced code blocks
+    if (/^```/.test(raw)) {
+      if (!inCode) {
+        closeList();
+        inCode = true;
+        codeLines = [];
+      } else {
+        out.push(`<pre><code>${codeLines.join('\n').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code></pre>`);
+        inCode = false;
+        codeLines = [];
+      }
+      return;
+    }
+    if (inCode) {
+      codeLines.push(raw);
+      return;
+    }
     const l = raw.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     if (/^### /.test(l)) {
       closeList();
@@ -2372,6 +2438,7 @@ function renderMarkdown(text) {
     out.push(`<p>${applyInlineMd(l)}</p>`);
   });
   closeList();
+  if (inCode) out.push(`<pre><code>${codeLines.join('\n').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code></pre>`);
   return out.join('');
 }
 
@@ -3321,7 +3388,7 @@ function renderNotesTab() {
         ${e.importance?`<div class="notes-log-imp-stars" title="Importance: ${e.importance}/5">${'★'.repeat(e.importance)}${'☆'.repeat(5-e.importance)}</div>`:''}
       </div>`;
       if (e.note) {
-        html += `<div class="notes-log-note-text" style="border-radius:6px;padding:4px 6px;cursor:pointer;word-break:break-word;line-height:1.6;color:var(--muted)">${renderMarkdown(e.note)}</div>`;
+        html += `<div class="notes-log-note-text md-preview" style="border-radius:6px;padding:4px 6px;cursor:pointer;word-break:break-word;line-height:1.6;color:var(--muted)">${renderMarkdown(e.note)}</div>`;
       } else {
         html += `<div class="notes-log-note-text" style="border-radius:6px;padding:4px 6px;cursor:pointer;color:var(--faint);font-style:italic">Click to add note…</div>`;
       }
@@ -3338,7 +3405,7 @@ function renderNotesTab() {
       card.innerHTML = html;
       // Make the entire card clickable to open modal
       card.style.cursor = 'pointer';
-      card.onclick = () => openNotesModal(e.blockIdx, e.date);
+      card.onclick = () => openNotesModal(e.blockIdx, e.date, true);
       group.appendChild(card);
     });
     logEl.appendChild(group);

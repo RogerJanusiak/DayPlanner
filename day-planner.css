@@ -725,6 +725,34 @@ html,body {
   flex-direction:column;
   box-shadow:0 24px 64px rgba(0,0,0,.7);
 }
+#notes-modal.notes-only {
+  width:min(1200px, 93vw);
+  max-height:92vh;
+}
+#notes-modal.notes-only #notes-textarea {
+  min-height:calc(92vh - 210px);
+  resize:none;
+}
+#notes-edit-area {
+  display:flex;
+  flex-direction:column;
+}
+#notes-edit-area.live {
+  flex-direction:row;
+  gap:10px;
+}
+#notes-edit-area.live #notes-textarea {
+  flex:1;
+  min-height:calc(92vh - 210px);
+  resize:none;
+}
+#notes-edit-area.live #notes-md-preview {
+  flex:1;
+  display:block !important;
+  min-height:calc(92vh - 210px);
+  overflow-y:auto;
+  cursor:default;
+}
 #notes-modal-header {
   padding:15px 17px 11px;
   border-bottom:1px solid var(--border);
@@ -2190,6 +2218,22 @@ html,body {
   font-family:'DM Mono',monospace;
   font-size:10px;
   color:var(--teal);
+}
+.md-preview pre {
+  background:var(--bg4);
+  border-radius:5px;
+  padding:8px 10px;
+  margin:4px 0;
+  overflow-x:auto;
+  font-family:'DM Mono',monospace;
+  font-size:10px;
+  color:var(--teal);
+  white-space:pre;
+}
+.md-preview pre code {
+  background:none;
+  padding:0;
+  border-radius:0;
 }
 .md-preview blockquote {
   border-left:3px solid var(--border2);

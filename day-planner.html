@@ -333,12 +333,15 @@
       <div class="notes-section-label" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
         <span>Notes</span>
         <div style="display:flex;gap:4px">
+          <button id="notes-live-btn" class="tab-btn" style="padding:3px 8px;font-size:9px;border-bottom-width:1px;display:none">LIVE</button>
           <button id="notes-mode-edit" class="tab-btn active" style="padding:3px 8px;font-size:9px;border-bottom-width:1px">EDIT</button>
           <button id="notes-mode-preview" class="tab-btn" style="padding:3px 8px;font-size:9px;border-bottom-width:1px">PREVIEW</button>
         </div>
       </div>
-      <textarea id="notes-textarea" placeholder="Context, goals, or anything for this block… (supports **markdown**)"></textarea>
-      <div id="notes-md-preview" style="display:none;background:var(--bg);border:1px solid var(--border2);color:var(--text);font-family:Georgia,serif;font-size:11px;border-radius:8px;padding:9px 11px;min-height:82px;line-height:1.7;cursor:pointer"></div>
+      <div id="notes-edit-area">
+        <textarea id="notes-textarea" placeholder="Context, goals, or anything for this block… (supports **markdown**)"></textarea>
+        <div id="notes-md-preview" style="display:none;background:var(--bg);border:1px solid var(--border2);color:var(--text);font-family:Georgia,serif;font-size:11px;border-radius:8px;padding:9px 11px;min-height:82px;line-height:1.7;cursor:pointer"></div>
+      </div>
       <div class="notes-section-label notes-gap">To-do list</div>
       <div id="todo-list"></div>
       <div id="add-todo-row">
