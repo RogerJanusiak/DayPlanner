@@ -12,3 +12,8 @@ nohup.out
 .server.log
 .server.pid
 ._.server.pid
+._nohup.out
+.claude
+._.claude
+._day-planner.css
+._day-planner.js

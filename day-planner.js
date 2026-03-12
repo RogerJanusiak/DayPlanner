@@ -1,0 +1,3574 @@
+// ════════════════════════════════════════════════════════════
+//  CONSTANTS & STATE
+// ════════════════════════════════════════════════════════════
+const STORAGE_KEY = 'dayplanner_v7';
+const CIRC = 2 * Math.PI * 44; // r=44 for timer ring
+
+let state = {
+  projects: [{
+      id: 'deep-work',
+      name: 'Deep Work',
+      color: '#C2410C',
+      emoji: '🧠'
+    },
+    {
+      id: 'email',
+      name: 'Email & Comms',
+      color: '#1D4ED8',
+      emoji: '📬'
+    },
+    {
+      id: 'meetings',
+      name: 'Meetings',
+      color: '#6D28D9',
+      emoji: '🤝'
+    },
+    {
+      id: 'admin',
+      name: 'Admin',
+      color: '#047857',
+      emoji: '📋'
+    },
+    {
+      id: 'break',
+      name: 'Break',
+      color: '#92400E',
+      emoji: '☕'
+    },
+  ],
+  days: {},
+  settings: {
+    dailyGoal: 8
+  },
+  projectTodos: {},
+  timerState: {
+    activeBlock: null,
+    startedAt: null,
+    elapsedMs: 0,
+    date: null
+  }
+  // projectTodos[projId] = [{id, text, done, doneDate, history:[{date, type:'done'|'progress', blockIdx}]}]
+};
+let ui = {
+  currentDate: todayStr(),
+  activeBlock: null,
+  timerStartedAt: null,
+  timerElapsedMs: 0,
+  timerRunning: false,
+  timerInterval: null,
+  clockInterval: null,
+  openDropdown: null,
+  editingProjId: null,
+  tab: 'plan',
+  notesBlockIdx: null,
+  notesDate: null,
+  dragSrcIdx: null, // block-to-block drag
+  dragProjId: null, // project-from-sidebar drag
+  openProjTodosId: null, // which project todos group is expanded
+  notesTabProjId: null, // selected project in Notes tab
+  notesTabImportanceFilter: 0, // 0=All, 1-5=exact star rating
+  focusBlock: null, // block idx shown in focus view
+};
+
+// ════════════════════════════════════════════════════════════
+//  HELPERS
+// ════════════════════════════════════════════════════════════
+function todayStr() {
+  return new Date().toISOString().slice(0, 10)
+}
+
+function dateFromStr(ds) {
+  return new Date(ds + 'T12:00:00')
+}
+
+function isWeekend(ds) {
+  const d = dateFromStr(ds).getDay();
+  return d === 0 || d === 6
+}
+
+function formatDateLabel(ds) {
+  return dateFromStr(ds).toLocaleDateString('en-US', {
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric'
+  }).toUpperCase()
+}
+
+function formatTime(h, half) {
+  const hr = h % 12 || 12,
+    ap = h < 12 ? 'AM' : 'PM';
+  return `${hr}:${half?'30':'00'} ${ap}`
+}
+
+function formatSecs(s) {
+  s = Math.max(0, Math.floor(s));
+  if (s >= 3600) {
+    const h = Math.floor(s / 3600);
+    return `${h}:${String(Math.floor((s%3600)/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`
+  }
+  return `${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`
+}
+
+function setDay(ds, data) {
+  state.days[ds] = data
+}
+
+function currentDayData() {
+  return getDay(ui.currentDate)
+}
+
+function getProject(id) {
+  return state.projects.find(p => p.id === id)
+}
+
+function sortedDays() {
+  return Object.keys(state.days).sort().reverse()
+}
+
+function isToday() {
+  return ui.currentDate === todayStr()
+}
+
+function blockToTime(idx) {
+  return [Math.floor(idx / 2) + 6, idx % 2]
+}
+
+function escAttr(s) {
+  return (s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+}
+
+function getTimerRemaining() {
+  const dur = getBlockDuration(ui.activeBlock);
+  const ms = ui.timerRunning ? ui.timerElapsedMs + (Date.now() - ui.timerStartedAt) : ui.timerElapsedMs;
+  return Math.max(0, dur - ms / 1000);
+}
+
+function blockHasContent(idx, ds) {
+  const n = ((state.days[ds || ui.currentDate] || {}).blockNotes || {})[idx];
+  return n && ((n.note || '').trim() || (n.todos || []).length);
+}
+
+function currentHourFrac() {
+  const n = new Date();
+  return n.getHours() + n.getMinutes() / 60
+}
+
+function dailyGoal() {
+  return Math.max(1, +(state.settings.dailyGoal) || 8)
+}
+
+// ════════════════════════════════════════════════════════════
+//  STREAK (weekends & time-off aware)
+// ════════════════════════════════════════════════════════════
+function computeStreak() {
+  // Walk backwards from today. Skip weekends and time-off days.
+  // A weekday that isn't time-off must have completed >= 1 block (or meet goal).
+  let streak = 0,
+    d = new Date();
+  // Don't penalise today if it hasn't ended yet — only count it if goal met
+  const today = todayStr();
+  const todayData = state.days[today];
+  const todayDone = (todayData?.completed || []).length;
+  const todayTimeOff = todayData?.timeOff || false;
+  // Check today
+  if (!isWeekend(today)) {
+    if (todayTimeOff || todayDone >= 1) streak = 1;
+    // If today is unfinished weekday with 0 done, streak may still be built from yesterday
+    // We allow today's streak to be 0 and still show yesterday's streak
+  }
+  // Walk backward from yesterday
+  d.setDate(d.getDate() - 1);
+  while (true) {
+    const ds = d.toISOString().slice(0, 10);
+    if (isWeekend(ds)) {
+      d.setDate(d.getDate() - 1);
+      continue
+    }
+    const data = state.days[ds];
+    const done = (data?.completed || []).length;
+    const off = data?.timeOff || false;
+    if (off || done >= 1) {
+      streak++;
+      d.setDate(d.getDate() - 1);
+    } else break;
+  }
+  return streak;
+}
+
+// Momentum / decay: starts at 100, decays by 10 each weekday the goal is missed,
+// restores by 5 each goal-met weekday. Clamps 0-100.
+function computeMomentum() {
+  const days = Object.keys(state.days).filter(ds => !isWeekend(ds) && !state.days[ds]?.timeOff).sort();
+  let m = 100;
+  for (const ds of days) {
+    const done = (state.days[ds].completed || []).length;
+    if (done >= dailyGoal()) m = Math.min(100, m + 5);
+    else m = Math.max(0, m - 10);
+  }
+  return Math.round(m);
+}
+
+function computeStats() {
+  // Only non-timeoff weekdays count for streak
+  const allDays = Object.entries(state.days);
+  const activeDays = allDays.filter(([ds, d]) => !d.timeOff && (d.completed || []).length > 0);
+  const total = activeDays.reduce((s, [, d]) => s + (d.completed || []).length, 0);
+  const avg = activeDays.length ? (total / activeDays.length).toFixed(1) : '0.0';
+  const best = activeDays.length ? Math.max(...activeDays.map(([, d]) => (d.completed || []).length)) : 0;
+  const streak = computeStreak();
+  // completion rate: goals hit / total weekday work days
+  const weekdayWorkDays = allDays.filter(([ds, d]) => !isWeekend(ds) && !d.timeOff);
+  const goalsMet = weekdayWorkDays.filter(([, d]) => (d.completed || []).length >= dailyGoal()).length;
+  const rate = weekdayWorkDays.length ? Math.round(goalsMet / weekdayWorkDays.length * 100) : 0;
+  return {
+    total,
+    avg,
+    best,
+    streak,
+    days: activeDays.length,
+    rate,
+    momentum: computeMomentum()
+  };
+}
+
+// ════════════════════════════════════════════════════════════
+//  PERSISTENCE
+// ════════════════════════════════════════════════════════════
+function ensureForwardDays() {
+  const today = new Date();
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(today);
+    d.setDate(d.getDate() + i);
+    const ds = d.toISOString().slice(0, 10);
+    if (!state.days[ds]) {
+      state.days[ds] = {
+        schedule: {},
+        completed: [],
+        blockNotes: {},
+        timeOff: isWeekend(ds)
+      };
+    }
+  }
+}
+
+function save() {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
+  } catch (e) {}
+  // Push YAML to local server (silently — no-op if server not running)
+  try {
+    const yaml = toYaml();
+    fetch('/save', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'text/yaml'
+        },
+        body: yaml
+      })
+      .then(r => r.ok ? setServerStatus('saved') : setServerStatus('error'))
+      .catch(() => setServerStatus('offline'));
+  } catch (e) {}
+}
+
+function setServerStatus(state) {
+  const el = document.getElementById('io-bar-label');
+  if (!el) return;
+  const t = new Date().toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+  if (state === 'saved') el.innerHTML = `Auto-saved to browser &amp; file &middot; last save ${t}`;
+  else if (state === 'offline') el.textContent = 'Auto-saved to browser · Server offline — run server.js for file backup';
+  else el.textContent = 'Auto-saved to browser · File save error — check server.js';
+}
+async function loadFromServer() {
+  try {
+    const r = await fetch('/load');
+    if (r.status === 204) return false; // no file yet
+    if (!r.ok) return false;
+    const text = await r.text();
+    const p = parseYaml(text);
+    if (p.projects.length) state.projects = p.projects;
+    if (p.settings && p.settings.dailyGoal) state.settings.dailyGoal = p.settings.dailyGoal;
+    if (p.projectTodos && Object.keys(p.projectTodos).length) state.projectTodos = p.projectTodos;
+    if (Object.keys(p.days).length) Object.assign(state.days, p.days);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+function load() {
+  try {
+    const r = localStorage.getItem(STORAGE_KEY);
+    if (r) state = JSON.parse(r)
+  } catch (e) {}
+  if (!state.settings) state.settings = {
+    dailyGoal: 8
+  };
+  if (!state.projectTodos) state.projectTodos = {};
+  Object.keys(state.days).forEach(ds => {
+    if (!state.days[ds].blockNotes) state.days[ds].blockNotes = {};
+    if (!state.days[ds].blockSpan) state.days[ds].blockSpan = {};
+    if (state.days[ds].timeOff === undefined) state.days[ds].timeOff = isWeekend(ds);
+  });
+  ensureForwardDays();
+  save(); // persist the newly generated days
+}
+// Restore timer state after page load/refresh
+function restoreTimerState() {
+  const ts = state.timerState;
+  if (!ts || ts.activeBlock === null || ts.activeBlock === undefined) return;
+  if (ts.date !== todayStr()) {
+    // Timer was from a different day — discard silently
+    state.timerState = {
+      activeBlock: null,
+      startedAt: null,
+      elapsedMs: 0,
+      date: null
+    };
+    save();
+    return;
+  }
+  // Calculate total elapsed ms (accumulated + time since startedAt if was running)
+  let totalElapsed = ts.elapsedMs || 0;
+  if (ts.startedAt) {
+    totalElapsed += Date.now() - ts.startedAt;
+  }
+  if (totalElapsed >= 30 * 60 * 1000) {
+    // Block should be auto-completed
+    const blockIdx = ts.activeBlock;
+    const ds = ts.date;
+    const day = getDay(ds);
+    if (!day.completed.includes(blockIdx)) {
+      day.completed.push(blockIdx);
+      setDay(ds, day);
+    }
+    state.timerState = {
+      activeBlock: null,
+      startedAt: null,
+      elapsedMs: 0,
+      date: null
+    };
+    save();
+    console.log('[Timer] Auto-completed block', blockIdx, '(timer expired while away)');
+  } else {
+    // Resume timer from where we left off
+    ui.activeBlock = ts.activeBlock;
+    ui.timerElapsedMs = totalElapsed;
+    ui.timerStartedAt = Date.now();
+    ui.timerRunning = true;
+    // Update persisted state with fresh startedAt
+    state.timerState = {
+      activeBlock: ts.activeBlock,
+      startedAt: Date.now(),
+      elapsedMs: totalElapsed,
+      date: ts.date
+    };
+    save();
+    ui.timerInterval = setInterval(tickTimer, 500);
+    // focusBlock will be shown after renderAll() in init
+    ui.focusBlock = ts.activeBlock;
+  }
+}
+
+// Get or auto-init a day, setting timeOff=true for weekends by default
+function getDay(ds) {
+  if (!state.days[ds]) {
+    state.days[ds] = {
+      schedule: {},
+      completed: [],
+      blockNotes: {},
+      blockSpan: {},
+      timeOff: isWeekend(ds)
+    };
+  }
+  const d = state.days[ds];
+  if (!d.blockNotes) d.blockNotes = {};
+  if (!d.blockSpan) d.blockSpan = {};
+  if (d.timeOff === undefined) d.timeOff = isWeekend(ds);
+  return d;
+}
+// Return the duration of a block in seconds (30 or 60 min based on span)
+function getBlockDuration(idx, ds) {
+  if (idx === null || idx === undefined) return 30 * 60;
+  const span = ((getDay(ds || ui.currentDate).blockSpan) || {})[idx] || 1;
+  return span * 30 * 60;
+}
+
+// ════════════════════════════════════════════════════════════
+//  YAML
+// ════════════════════════════════════════════════════════════
+// ── YAML helpers ──────────────────────────────────────────────
+function yStr(s) {
+  return '"' + (s || '').replace(/\\/g, '\\\\').replace(/"/g, "'").replace(/\n/g, '\\n') + '"'
+}
+
+function yBool(b) {
+  return b ? 'true' : 'false'
+}
+
+function toYaml() {
+  const L = ['# Day Planner Export', `# Generated: ${new Date().toISOString()}`, ''];
+
+  // settings
+  L.push('settings:');
+  L.push(`  dailyGoal: ${dailyGoal()}`);
+  L.push('');
+
+  // projects
+  L.push('projects:');
+  state.projects.forEach(p => {
+    L.push(`  - id: ${yStr(p.id)}`);
+    L.push(`    name: ${yStr(p.name)}`);
+    L.push(`    emoji: ${yStr(p.emoji)}`);
+    L.push(`    color: ${yStr(p.color)}`);
+  });
+  L.push('');
+
+  // projectTodos  — keyed by project id
+  L.push('projectTodos:');
+  let hasProjTodos = false;
+  Object.entries(state.projectTodos || {}).forEach(([projId, todos]) => {
+    if (!todos || !todos.length) return;
+    hasProjTodos = true;
+    L.push(`  ${yStr(projId)}:`);
+    todos.forEach(t => {
+      L.push(`    - id: ${yStr(t.id)}`);
+      L.push(`      text: ${yStr(t.text)}`);
+      L.push(`      done: ${yBool(t.done)}`);
+      if ((t.history || []).length) {
+        L.push('      history:');
+        t.history.forEach(h => {
+          const bk = h.blockIdx != null ? `, blockIdx: ${h.blockIdx}` : '';
+          L.push(`        - {date: ${yStr(h.date)}, type: ${yStr(h.type)}${bk}}`);
+        });
+      }
+    });
+  });
+  if (!hasProjTodos) L.push('  {}');
+  L.push('');
+
+  // days
+  L.push('days:');
+  Object.entries(state.days).sort().forEach(([ds, data]) => {
+    L.push(`  ${yStr(ds)}:`);
+    if (data.timeOff) L.push('    timeOff: true');
+
+    const sched = data.schedule || {};
+    if (Object.keys(sched).length) {
+      L.push('    schedule:');
+      Object.entries(sched).sort((a, b) => +a[0] - +b[0]).forEach(([idx, pid]) => {
+        const [h, half] = blockToTime(+idx);
+        L.push(`      ${idx}: ${yStr(pid)}  # ${formatTime(h,half)}`);
+      });
+    }
+
+    const done = data.completed || [];
+    if (done.length) L.push(`    completed: [${[...done].sort((a,b)=>a-b).join(', ')}]`);
+
+    // blockSpan — 1-hour block markers
+    const spans = Object.entries(data.blockSpan || {}).filter(([, v]) => v >= 2);
+    if (spans.length) {
+      L.push('    blockSpan:');
+      spans.forEach(([idx, sp]) => {
+        const [h, half] = blockToTime(+idx);
+        L.push(`      ${idx}: ${sp}  # ${formatTime(h,half)}`);
+      });
+    }
+
+    // blockNotes — includes note, todos (with ids), and projTodos pins
+    const notes = data.blockNotes || {};
+    const noteEntries = Object.entries(notes).filter(([, n]) =>
+      (n.note || '').trim() || (n.todos || []).length || (n.projTodos || []).length
+    );
+    if (noteEntries.length) {
+      L.push('    blockNotes:');
+      noteEntries.forEach(([idx, n]) => {
+        const [h, half] = blockToTime(+idx);
+        L.push(`      ${idx}:  # ${formatTime(h,half)}`);
+        if (n.importance) L.push(`        importance: ${n.importance}`);
+        if ((n.note || '').trim()) L.push(`        note: ${yStr(n.note)}`);
+        if ((n.todos || []).length) {
+          L.push('        todos:');
+          n.todos.forEach(t => {
+            L.push(`          - id: ${yStr(String(t.id))}`);
+            L.push(`            text: ${yStr(t.text)}`);
+            L.push(`            done: ${yBool(t.done)}`);
+          });
+        }
+        if ((n.projTodos || []).length) {
+          L.push('        projTodos:');
+          n.projTodos.forEach(r => {
+            L.push(`          - {projId: ${yStr(r.projId)}, todoId: ${yStr(r.todoId)}}`);
+          });
+        }
+      });
+    }
+  });
+
+  return L.join('\n');
+}
+
+function parseYaml(text) {
+  const result = {
+    projects: [],
+    days: {},
+    settings: {},
+    projectTodos: {}
+  };
+  // We use a simple indentation-aware state machine
+  let mode = null; // 'settings'|'projects'|'projectTodos'|'days'
+  let curProj = null; // current project object being built
+  let curProjTodoId = null; // current projectTodos projId key
+  let curProjTodoItem = null; // current todo item in projectTodos
+  let curDay = null; // current day string
+  let curNoteIdx = null; // current blockNote index
+  let curTodoItem = null; // current block todo item being built
+  let inSection = null; // sub-section: 'schedule'|'blockNotes'|'projTodosList'|'history'
+  let inNoteSection = null; // 'todos'|'projTodos'
+
+  const lines = text.split('\n');
+  for (let li = 0; li < lines.length; li++) {
+    const raw = lines[li].replace(/\r$/, '');
+    const trim = raw.trim();
+    if (!trim || trim.startsWith('#')) continue;
+
+    const indent = raw.match(/^(\s*)/)[1].length;
+
+    // top-level section headers
+    if (indent === 0) {
+      if (trim === 'settings:') {
+        mode = 'settings';
+        inSection = null;
+        curDay = null;
+        continue
+      }
+      if (trim === 'projects:') {
+        mode = 'projects';
+        inSection = null;
+        curDay = null;
+        continue
+      }
+      if (trim === 'projectTodos:') {
+        mode = 'projectTodos';
+        inSection = null;
+        curDay = null;
+        continue
+      }
+      if (trim === 'days:') {
+        mode = 'days';
+        inSection = null;
+        curDay = null;
+        continue
+      }
+    }
+
+    if (mode === 'settings') {
+      const m = trim.match(/^dailyGoal:\s*(\d+)/);
+      if (m) result.settings.dailyGoal = +m[1];
+      continue;
+    }
+
+    if (mode === 'projects') {
+      if (trim.startsWith('- id:')) {
+        const m = trim.match(/- id:\s*"([^"]+)"/);
+        if (m) {
+          curProj = {
+            id: m[1],
+            name: '',
+            emoji: '',
+            color: ''
+          };
+          result.projects.push(curProj);
+        }
+      } else if (curProj) {
+        const nm = trim.match(/^name:\s*"([^"]*)"/);
+        if (nm) curProj.name = nm[1];
+        const em = trim.match(/^emoji:\s*"([^"]*)"/);
+        if (em) curProj.emoji = em[1];
+        const cm = trim.match(/^color:\s*"([^"]*)"/);
+        if (cm) curProj.color = cm[1];
+      }
+      continue;
+    }
+
+    if (mode === 'projectTodos') {
+      if (trim === '{}' || trim === '{}') continue; // empty marker
+      if (indent === 2 && trim.endsWith(':')) {
+        // project id key
+        const m = trim.match(/^"([^"]+)":/);
+        if (m) {
+          curProjTodoId = m[1];
+          if (!result.projectTodos[curProjTodoId]) result.projectTodos[curProjTodoId] = [];
+          curProjTodoItem = null;
+        }
+        continue;
+      }
+      if (curProjTodoId) {
+        if (indent === 4 && trim.startsWith('- id:')) {
+          const m = trim.match(/- id:\s*"([^"]*)"/);
+          if (m) {
+            curProjTodoItem = {
+              id: m[1],
+              text: '',
+              done: false,
+              history: []
+            };
+            result.projectTodos[curProjTodoId].push(curProjTodoItem);
+          }
+          continue;
+        }
+        if (curProjTodoItem && indent === 6) {
+          const tm = trim.match(/^text:\s*"([^"]*)"/);
+          if (tm) {
+            curProjTodoItem.text = tm[1].replace(/\\n/g, '\n');
+            continue;
+          }
+          const dm = trim.match(/^done:\s*(true|false)/);
+          if (dm) {
+            curProjTodoItem.done = dm[1] === 'true';
+            continue;
+          }
+          if (trim === 'history:') {
+            inSection = 'history';
+            continue;
+          }
+        }
+        if (inSection === 'history' && indent === 8 && trim.startsWith('-')) {
+          const dm = trim.match(/date:\s*"([^"]*)"/);
+          const tp = trim.match(/type:\s*"([^"]*)"/);
+          const bk = trim.match(/blockIdx:\s*(\d+)/);
+          if (dm && tp && curProjTodoItem) {
+            curProjTodoItem.history.push({
+              date: dm[1],
+              type: tp[1],
+              blockIdx: bk ? +bk[1] : null
+            });
+          }
+          continue;
+        }
+      }
+      continue;
+    }
+
+    if (mode === 'days') {
+      // day key: "2025-01-01":
+      if (indent === 2 && !trim.startsWith('-')) {
+        const dm = trim.match(/^"(\d{4}-\d{2}-\d{2})":/);
+        if (dm) {
+          curDay = dm[1];
+          result.days[curDay] = {
+            schedule: {},
+            completed: [],
+            blockNotes: {},
+            blockSpan: {},
+            timeOff: false
+          };
+          inSection = null;
+          curNoteIdx = null;
+          inNoteSection = null;
+          curTodoItem = null;
+          continue;
+        }
+      }
+      if (!curDay) continue;
+
+      if (indent === 4) {
+        if (trim === 'timeOff: true') {
+          result.days[curDay].timeOff = true;
+          continue;
+        }
+        if (trim === 'schedule:') {
+          inSection = 'schedule';
+          inNoteSection = null;
+          continue;
+        }
+        if (trim === 'blockNotes:') {
+          inSection = 'blockNotes';
+          inNoteSection = null;
+          continue;
+        }
+        if (trim === 'blockSpan:') {
+          inSection = 'blockSpan';
+          inNoteSection = null;
+          continue;
+        }
+        if (trim.startsWith('completed:')) {
+          inSection = null;
+          const nums = trim.match(/\d+/g);
+          if (nums) result.days[curDay].completed = nums.map(Number);
+          continue;
+        }
+      }
+
+      if (inSection === 'blockSpan' && indent === 6) {
+        const m = trim.match(/^(\d+):\s*(\d+)/);
+        if (m) {
+          if (!result.days[curDay].blockSpan) result.days[curDay].blockSpan = {};
+          result.days[curDay].blockSpan[m[1]] = +m[2];
+        }
+        continue;
+      }
+
+      if (inSection === 'schedule' && indent === 6) {
+        const m = trim.match(/^(\d+):\s*"([^"]+)"/);
+        if (m) result.days[curDay].schedule[m[1]] = m[2];
+        continue;
+      }
+
+      if (inSection === 'blockNotes') {
+        if (indent === 6 && !trim.startsWith('-')) {
+          const m = trim.match(/^(\d+):/);
+          if (m) {
+            curNoteIdx = m[1];
+            result.days[curDay].blockNotes[curNoteIdx] = {
+              note: '',
+              todos: [],
+              projTodos: []
+            };
+            inNoteSection = null;
+            curTodoItem = null;
+          }
+          continue;
+        }
+        if (curNoteIdx) {
+          if (indent === 8) {
+            if (trim === 'todos:') {
+              inNoteSection = 'todos';
+              curTodoItem = null;
+              continue;
+            }
+            if (trim === 'projTodos:') {
+              inNoteSection = 'projTodos';
+              continue;
+            }
+            const nm = trim.match(/^note:\s*"([^"]*)"/);
+            if (nm) {
+              result.days[curDay].blockNotes[curNoteIdx].note = nm[1].replace(/\\n/g, '\n');
+              continue;
+            }
+            const im = trim.match(/^importance:\s*(\d)/);
+            if (im) {
+              result.days[curDay].blockNotes[curNoteIdx].importance = +im[1];
+              continue;
+            }
+          }
+          if (inNoteSection === 'todos' && indent === 10) {
+            if (trim.startsWith('- id:')) {
+              const m = trim.match(/- id:\s*"([^"]*)"/);
+              if (m) {
+                curTodoItem = {
+                  id: m[1],
+                  text: '',
+                  done: false
+                };
+                result.days[curDay].blockNotes[curNoteIdx].todos.push(curTodoItem);
+              }
+              continue;
+            }
+            if (curTodoItem) {
+              const tm = trim.match(/^text:\s*"([^"]*)"/);
+              if (tm) {
+                curTodoItem.text = tm[1].replace(/\\n/g, '\n');
+                continue;
+              }
+              const dm = trim.match(/^done:\s*(true|false)/);
+              if (dm) {
+                curTodoItem.done = dm[1] === 'true';
+                continue;
+              }
+            }
+          }
+          if (inNoteSection === 'projTodos' && indent === 10 && trim.startsWith('-')) {
+            const pm = trim.match(/projId:\s*"([^"]*)"/);
+            const tm = trim.match(/todoId:\s*"([^"]*)"/);
+            if (pm && tm) result.days[curDay].blockNotes[curNoteIdx].projTodos.push({
+              projId: pm[1],
+              todoId: tm[1]
+            });
+            continue;
+          }
+        }
+      }
+    }
+  }
+  return result;
+}
+
+function exportYaml() {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([toYaml()], {
+    type: 'text/yaml'
+  }));
+  a.download = `day-planner-${todayStr()}.yaml`;
+  a.click();
+}
+
+function importYaml(text) {
+  try {
+    const p = parseYaml(text);
+    if (p.projects.length) state.projects = p.projects;
+    if (p.settings.dailyGoal) state.settings.dailyGoal = p.settings.dailyGoal;
+    if (p.projectTodos && Object.keys(p.projectTodos).length) Object.assign(state.projectTodos, p.projectTodos);
+    Object.assign(state.days, p.days);
+    ensureForwardDays();
+    save();
+    renderAll();
+    alert('Import successful!');
+  } catch (e) {
+    alert('Import failed.\n' + e.message)
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+//  TIMER
+// ════════════════════════════════════════════════════════════
+function requestNotifPermission() {
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
+}
+
+function fireTimerNotification(projName) {
+  if (!('Notification' in window)) {
+    // Fallback: show browser alert if Notification API not available
+    alert('✓ Block Complete!\n' + (projName ? projName : 'Your 30-minute block is finished!'));
+    return;
+  }
+  if (Notification.permission === 'default') {
+    Notification.requestPermission().then(perm => {
+      if (perm === 'granted') fireTimerNotification(projName);
+    });
+    return;
+  }
+  if (Notification.permission !== 'granted') return;
+  const notifTitle = 'Block Complete ✓';
+  const durationText = parseInt(projName?.match(/\d+\s*(?:min|hour|h|m)/)?.[0] || '30') > 30 ? '1-hour' : '30-minute';
+  const n = new Notification(notifTitle, {
+    body: projName ? `${projName}\n${durationText} block finished!` : `${durationText} block finished!`,
+    icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><circle cx="32" cy="32" r="30" fill="%239B8FCF" opacity="0.2"/><text x="32" y="48" text-anchor="middle" font-size="32" font-weight="bold">✓</text></svg>',
+    tag: 'day-planner-timer',
+    silent: false,
+    requireInteraction: false
+  });
+  setTimeout(() => n.close(), 8000);
+}
+
+function startTimer(blockIdx) {
+  clearInterval(ui.timerInterval);
+  requestNotifPermission();
+  ui.activeBlock = blockIdx;
+  ui.timerElapsedMs = 0;
+  ui.timerStartedAt = Date.now();
+  ui.timerRunning = true;
+  state.timerState = {
+    activeBlock: blockIdx,
+    startedAt: ui.timerStartedAt,
+    elapsedMs: 0,
+    date: todayStr()
+  };
+  save();
+  ui.timerInterval = setInterval(tickTimer, 500);
+  switchTab('today');
+  showBlockFocus(blockIdx);
+}
+
+function tickTimer() {
+  if (getTimerRemaining() <= 0) {
+    const proj = getProject((currentDayData().schedule || {})[ui.activeBlock]);
+    completeBlock(ui.activeBlock);
+    clearInterval(ui.timerInterval);
+    ui.timerRunning = false;
+    ui.timerElapsedMs = 0;
+    ui.timerStartedAt = null;
+    ui.activeBlock = null;
+    state.timerState = {
+      activeBlock: null,
+      startedAt: null,
+      elapsedMs: 0,
+      date: null
+    };
+    save();
+    fireTimerNotification(proj ? `${proj.emoji} ${proj.name}` : '');
+    hideBlockFocus();
+    renderAll();
+    return;
+  }
+  renderTimerCard();
+  renderDayflowMini();
+  renderGamePanel();
+  renderPlanBanner();
+}
+
+function pauseResumeTimer() {
+  if (ui.timerRunning) {
+    ui.timerElapsedMs += Date.now() - ui.timerStartedAt;
+    ui.timerStartedAt = null;
+    ui.timerRunning = false;
+    clearInterval(ui.timerInterval);
+    state.timerState = {
+      ...state.timerState,
+      startedAt: null,
+      elapsedMs: ui.timerElapsedMs
+    };
+  } else {
+    ui.timerStartedAt = Date.now();
+    ui.timerRunning = true;
+    ui.timerInterval = setInterval(tickTimer, 500);
+    state.timerState = {
+      ...state.timerState,
+      startedAt: ui.timerStartedAt
+    };
+  }
+  save();
+  renderTimerCard();
+}
+
+function doneTimer() {
+  if (ui.activeBlock !== null) completeBlock(ui.activeBlock);
+  clearInterval(ui.timerInterval);
+  ui.activeBlock = null;
+  ui.timerRunning = false;
+  ui.timerElapsedMs = 0;
+  ui.timerStartedAt = null;
+  state.timerState = {
+    activeBlock: null,
+    startedAt: null,
+    elapsedMs: 0,
+    date: null
+  };
+  save();
+  hideBlockFocus();
+  renderAll();
+}
+
+function completeBlock(idx) {
+  const day = currentDayData();
+  const span = (day.blockSpan || {})[idx] || 1;
+  let changed = false;
+  for (let i = 0; i < span; i++) {
+    if (!day.completed.includes(idx + i)) {
+      day.completed.push(idx + i);
+      changed = true;
+    }
+  }
+  if (changed) {
+    setDay(ui.currentDate, day);
+    save();
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+//  SCHEDULE MUTATIONS
+// ════════════════════════════════════════════════════════════
+function assignBlock(blockIdx, projId) {
+  const day = currentDayData();
+  day.schedule[blockIdx] = projId;
+  setDay(ui.currentDate, day);
+  save();
+  closeDropdown();
+  renderScheduleGrid();
+  renderSidebar();
+  renderTodayTab();
+  renderHeaderStats();
+}
+
+function assignBlock1hr(blockIdx, projId) {
+  const day = currentDayData();
+  if (!day.blockSpan) day.blockSpan = {};
+  // Check if there's space for a 1-hour block
+  if (blockIdx + 1 > 35) {
+    alert('Not enough space for a 1-hour block at this time.');
+    return;
+  }
+  // Check if the next block is occupied
+  const nextBlockOccupied = day.schedule[blockIdx + 1];
+  if (nextBlockOccupied) {
+    // Ask if user wants to delete the next block
+    if (!confirm('The next 30-minute slot is occupied. Delete it to make room for this 1-hour block?')) {
+      return;
+    }
+    // Delete the next block if it exists and user confirms
+    delete day.schedule[blockIdx + 1];
+    day.completed = day.completed.filter(i => i !== blockIdx + 1);
+    if (day.blockNotes) delete day.blockNotes[blockIdx + 1];
+    if (day.blockSpan) delete day.blockSpan[blockIdx + 1];
+  }
+  day.schedule[blockIdx] = projId;
+  day.schedule[blockIdx + 1] = projId;
+  day.blockSpan[blockIdx] = 2; // marks as 1-hour span start
+  setDay(ui.currentDate, day);
+  save();
+  closeDropdown();
+  renderScheduleGrid();
+  renderSidebar();
+  renderTodayTab();
+  renderHeaderStats();
+}
+
+function clearBlock(blockIdx) {
+  const day = currentDayData();
+  const bn = (day.blockNotes || {})[blockIdx];
+  const hasNote = (bn && bn.note || '').trim().length > 0;
+  const todos = (bn && bn.todos) || [];
+  const hasTodos = todos.length > 0;
+
+  // Build warning message listing what will be lost
+  const warnings = [];
+  if (hasNote) warnings.push('the notes written for this block');
+  if (hasTodos) warnings.push(todos.length + ' to-do item' + (todos.length !== 1 ? 's' : '') + ' (including from Today)');
+  if (warnings.length) {
+    const msg = 'Removing this block will also permanently delete ' + warnings.join(' and ') + '.\n\nThis cannot be undone. Continue?';
+    if (!confirm(msg)) return;
+  }
+
+  const span = (day.blockSpan || {})[blockIdx] || 1;
+  for (let i = 0; i < span; i++) {
+    delete day.schedule[blockIdx + i];
+  }
+  day.completed = day.completed.filter(i => {
+    for (let s = 0; s < span; s++)
+      if (i === blockIdx + s) return false;
+    return true;
+  });
+  if (day.blockNotes) delete day.blockNotes[blockIdx];
+  if (day.blockSpan) delete day.blockSpan[blockIdx];
+  if (ui.activeBlock === blockIdx) doneTimer();
+  setDay(ui.currentDate, day);
+  save();
+  renderScheduleGrid();
+  renderSidebar();
+  renderTodayTab();
+  renderHeaderStats();
+}
+
+function moveBlock(fromIdx, toIdx) {
+  if (fromIdx === toIdx) return;
+  const day = currentDayData();
+  const sched = day.schedule || {},
+    notes = day.blockNotes || {};
+  const fromProj = sched[fromIdx],
+    toProj = sched[toIdx];
+  if (toProj) sched[fromIdx] = toProj;
+  else delete sched[fromIdx];
+  sched[toIdx] = fromProj;
+  const fromNote = notes[fromIdx],
+    toNote = notes[toIdx];
+  if (fromNote) notes[toIdx] = fromNote;
+  else delete notes[toIdx];
+  if (toNote) notes[fromIdx] = toNote;
+  else delete notes[fromIdx];
+  const fromDone = day.completed.includes(fromIdx),
+    toDone = day.completed.includes(toIdx);
+  day.completed = day.completed.filter(i => i !== fromIdx && i !== toIdx);
+  if (fromDone) day.completed.push(toIdx);
+  if (toDone) day.completed.push(fromIdx);
+  if (ui.activeBlock === fromIdx) ui.activeBlock = toIdx;
+  else if (ui.activeBlock === toIdx) ui.activeBlock = fromIdx;
+  day.schedule = sched;
+  day.blockNotes = notes;
+  setDay(ui.currentDate, day);
+  save();
+  renderScheduleGrid();
+  renderSidebar();
+  renderTodayTab();
+  renderHeaderStats();
+}
+
+function toggleTimeOff() {
+  const day = currentDayData();
+  day.timeOff = !day.timeOff;
+  setDay(ui.currentDate, day);
+  save();
+  renderAll();
+}
+
+// ════════════════════════════════════════════════════════════
+//  NOTES MODAL
+// ════════════════════════════════════════════════════════════
+function openNotesModal(blockIdx, ds) {
+  ui.notesBlockIdx = blockIdx;
+  ui.notesDate = ds || ui.currentDate;
+  const day = getDay(ui.notesDate),
+    proj = getProject((day.schedule || {})[blockIdx]);
+  const [h, half] = blockToTime(blockIdx);
+  const ex = (day.blockNotes || {})[blockIdx] || {
+    note: '',
+    todos: []
+  };
+  document.getElementById('notes-modal-proj').textContent = proj ? `${proj.emoji} ${proj.name}` : 'Block';
+  document.getElementById('notes-modal-proj').style.color = proj ? proj.color : 'var(--text)';
+  document.getElementById('notes-modal-time').textContent = formatTime(h, half);
+  document.getElementById('notes-textarea').value = ex.note || '';
+  document.getElementById('notes-textarea')._savedValue = ex.note || '';
+  // Importance stars
+  const impVal = ex.importance || 0;
+
+  function updateStars(val) {
+    document.querySelectorAll('#star-picker .star-btn').forEach(b => b.classList.toggle('active', +b.dataset.val <= val));
+  }
+  updateStars(impVal);
+  document.querySelectorAll('#star-picker .star-btn').forEach(btn => {
+    btn.onclick = () => {
+      const cur = [...document.querySelectorAll('#star-picker .star-btn')].filter(b => b.classList.contains('active')).length;
+      const newVal = (cur === +btn.dataset.val) ? 0 : +btn.dataset.val;
+      updateStars(newVal);
+    };
+  });
+  document.getElementById('clear-imp-btn').onclick = () => updateStars(0);
+  // Markdown edit/preview setup
+  const textarea = document.getElementById('notes-textarea');
+  const preview = document.getElementById('notes-md-preview');
+  const editBtn = document.getElementById('notes-mode-edit');
+  const previewBtn = document.getElementById('notes-mode-preview');
+
+  function showEdit() {
+    textarea.style.display = '';
+    preview.style.display = 'none';
+    editBtn.classList.add('active');
+    previewBtn.classList.remove('active');
+  }
+
+  function showPreview() {
+    preview.innerHTML = renderMarkdown(textarea.value);
+    textarea.style.display = 'none';
+    preview.style.display = 'block';
+    previewBtn.classList.add('active');
+    editBtn.classList.remove('active');
+  }
+  showEdit();
+  editBtn.onclick = showEdit;
+  previewBtn.onclick = showPreview;
+  preview.onclick = showEdit;
+  renderTodoList(ex.todos || []);
+  renderBlockProjTodos(proj?.id, blockIdx, ui.notesDate);
+  document.getElementById('notes-overlay').classList.add('open');
+  setTimeout(() => document.getElementById('notes-textarea').focus(), 50);
+}
+
+function renderTodoList(todos) {
+  const list = document.getElementById('todo-list');
+  list.innerHTML = '';
+  todos.forEach(t => {
+    const item = document.createElement('div');
+    item.className = 'todo-item';
+    item.dataset.id = t.id;
+    item.innerHTML = `<input type="checkbox" class="todo-cb" ${t.done?'checked':''}><input type="text" class="todo-text${t.done?' done':''}" value="${escAttr(t.text)}"><button class="todo-del">✕</button>`;
+    item.querySelector('.todo-cb').onchange = e => item.querySelector('.todo-text').classList.toggle('done', e.target.checked);
+    item.querySelector('.todo-del').onclick = () => item.remove();
+    list.appendChild(item);
+  });
+}
+
+function saveNotesModal() {
+  const blockIdx = ui.notesBlockIdx,
+    ds = ui.notesDate;
+  const note = document.getElementById('notes-textarea').value;
+  const todos = [...document.querySelectorAll('#todo-list .todo-item')].map(item => ({
+    id: item.dataset.id || String(Date.now() + Math.random()),
+    text: item.querySelector('.todo-text').value,
+    done: item.querySelector('.todo-cb').checked
+  }));
+  const importance = [...document.querySelectorAll('#star-picker .star-btn')].filter(b => b.classList.contains('active')).length || null;
+  const day = getDay(ds);
+  if (!day.blockNotes) day.blockNotes = {};
+  // Preserve projTodos if they exist
+  const existingProjTodos = (day.blockNotes[blockIdx] || {}).projTodos || [];
+  day.blockNotes[blockIdx] = {
+    note,
+    todos,
+    projTodos: existingProjTodos,
+    importance
+  };
+  setDay(ds, day);
+  save();
+  closeNotesModal();
+  renderScheduleGrid();
+  renderTodayTab();
+}
+
+function closeNotesModal() {
+  document.getElementById('notes-overlay').classList.remove('open');
+  ui.notesBlockIdx = null;
+  ui.notesDate = null
+}
+
+function addTodoItem() {
+  const input = document.getElementById('new-todo-input'),
+    text = input.value.trim();
+  if (!text) return;
+  const todos = [...document.querySelectorAll('#todo-list .todo-item')].map(item => ({
+    id: item.dataset.id,
+    text: item.querySelector('.todo-text').value,
+    done: item.querySelector('.todo-cb').checked
+  }));
+  todos.push({
+    id: String(Date.now()),
+    text,
+    done: false
+  });
+  renderTodoList(todos);
+  input.value = '';
+  input.focus();
+}
+
+// ════════════════════════════════════════════════════════════
+//  PROJECT TODOS
+// ════════════════════════════════════════════════════════════
+function getProjTodos(projId) {
+  if (!state.projectTodos[projId]) state.projectTodos[projId] = [];
+  return state.projectTodos[projId];
+}
+
+function addProjTodo(projId, text) {
+  if (!text.trim()) return;
+  getProjTodos(projId).push({
+    id: String(Date.now() + Math.random()),
+    text: text.trim(),
+    done: false,
+    history: []
+  });
+  save();
+}
+
+function deleteProjTodo(projId, todoId) {
+  state.projectTodos[projId] = (state.projectTodos[projId] || []).filter(t => t.id !== todoId);
+  save();
+}
+// Mark project todo as fully done (from block or todos tab)
+function completeProjTodo(projId, todoId, blockIdx, ds) {
+  const todos = getProjTodos(projId);
+  const t = todos.find(x => x.id === todoId);
+  if (!t) return;
+  t.done = true;
+  t.history = t.history || [];
+  t.history.push({
+    date: ds || todayStr(),
+    type: 'done',
+    blockIdx: blockIdx ?? null
+  });
+  save();
+}
+// Mark progress on project todo (checked off daily, not global)
+function progressProjTodo(projId, todoId, blockIdx, ds) {
+  const todos = getProjTodos(projId);
+  const t = todos.find(x => x.id === todoId);
+  if (!t) return;
+  t.history = t.history || [];
+  // Toggle: if already progressed today, remove it
+  const ds2 = ds || todayStr();
+  const existingIdx = t.history.findIndex(h => h.date === ds2 && h.type === 'progress' && (blockIdx === undefined || h.blockIdx === blockIdx));
+  if (existingIdx >= 0) {
+    t.history.splice(existingIdx, 1);
+  } else {
+    t.history.push({
+      date: ds2,
+      type: 'progress',
+      blockIdx: blockIdx ?? null
+    });
+  }
+  save();
+}
+
+function hasProjTodoProgressToday(projId, todoId, ds) {
+  const t = (getProjTodos(projId) || []).find(x => x.id === todoId);
+  if (!t) return false;
+  return (t.history || []).some(h => h.date === (ds || todayStr()) && h.type === 'progress');
+}
+
+// Render project todos in notes modal for the block's project
+// Shows all project todos with "add to block" if not pinned, done/progress if pinned
+function renderBlockProjTodos(projId, blockIdx, ds) {
+  const section = document.getElementById('block-proj-todos-section');
+  const list = document.getElementById('block-proj-todos-list');
+  if (!projId) {
+    section.style.display = 'none';
+    return;
+  }
+  const proj = getProject(projId);
+  const allTodos = getProjTodos(projId).filter(t => !t.done);
+  section.style.display = allTodos.length ? 'block' : 'none';
+  if (!allTodos.length) return;
+  document.getElementById('block-proj-todos-proj-name').textContent = proj ? `${proj.emoji} ${proj.name}` : '';
+  list.innerHTML = '';
+  const ds2 = ds || ui.currentDate;
+  const dayD = getDay(ds2);
+  const bn = dayD.blockNotes[blockIdx] || (dayD.blockNotes[blockIdx] = {
+    note: '',
+    todos: [],
+    projTodos: []
+  });
+  if (!bn.projTodos) bn.projTodos = [];
+  allTodos.forEach(t => {
+    const isPinned = bn.projTodos.some(r => r.todoId === t.id && r.projId === projId);
+    const progressed = isPinned && hasProjTodoProgressToday(projId, t.id, ds2);
+    const item = document.createElement('div');
+    item.className = 'block-proj-todo-item';
+    if (isPinned) {
+      item.innerHTML = `
+        <input type="checkbox" class="block-proj-todo-cb-done" title="Mark as fully done">
+        <span class="block-proj-todo-text">${escAttr(t.text)}</span>
+        <input type="checkbox" class="block-proj-todo-cb-progress" title="Log progress today" ${progressed?'checked':''}>
+        <span class="block-proj-todo-hint" style="color:var(--gold)">progress</span>
+        <button class="block-proj-todo-unpin" title="Remove from block" style="background:none;border:none;color:var(--faint);cursor:pointer;font-size:10px;padding:0 2px">✕</button>`;
+      item.querySelector('.block-proj-todo-cb-done').addEventListener('change', e => {
+        if (e.target.checked) {
+          completeProjTodo(projId, t.id, blockIdx, ds2);
+          renderBlockProjTodos(projId, blockIdx, ds);
+          renderTodayTodos();
+          if (ui.tab === 'todos') renderTodosTab();
+        }
+      });
+      item.querySelector('.block-proj-todo-cb-progress').addEventListener('change', () => {
+        progressProjTodo(projId, t.id, blockIdx, ds2);
+        renderBlockProjTodos(projId, blockIdx, ds);
+        renderTodayTodos();
+        if (ui.tab === 'todos') renderTodosTab();
+      });
+      item.querySelector('.block-proj-todo-unpin').addEventListener('click', () => {
+        bn.projTodos = bn.projTodos.filter(r => !(r.todoId === t.id && r.projId === projId));
+        setDay(ds2, dayD);
+        save();
+        renderBlockProjTodos(projId, blockIdx, ds);
+        renderTodayTodos();
+      });
+    } else {
+      item.innerHTML = `
+        <span class="block-proj-todo-text" style="color:var(--muted)">${escAttr(t.text)}</span>
+        <button class="block-proj-todo-pin" title="Add to this block" style="background:none;border:1px solid var(--border2);color:var(--faint);cursor:pointer;font-family:'DM Mono',monospace;font-size:9px;padding:2px 6px;border-radius:4px;white-space:nowrap;transition:all .15s">+ add to block</button>`;
+      item.querySelector('.block-proj-todo-pin').addEventListener('mouseenter', e => {
+        e.target.style.borderColor = 'var(--green)';
+        e.target.style.color = 'var(--green)';
+      });
+      item.querySelector('.block-proj-todo-pin').addEventListener('mouseleave', e => {
+        e.target.style.borderColor = 'var(--border2)';
+        e.target.style.color = 'var(--faint)';
+      });
+      item.querySelector('.block-proj-todo-pin').addEventListener('click', () => {
+        if (!dayD.blockNotes[blockIdx]) dayD.blockNotes[blockIdx] = {
+          note: '',
+          todos: [],
+          projTodos: []
+        };
+        if (!dayD.blockNotes[blockIdx].projTodos) dayD.blockNotes[blockIdx].projTodos = [];
+        dayD.blockNotes[blockIdx].projTodos.push({
+          projId,
+          todoId: t.id
+        });
+        setDay(ds2, dayD);
+        save();
+        renderBlockProjTodos(projId, blockIdx, ds);
+        renderTodayTodos();
+      });
+    }
+    list.appendChild(item);
+  });
+}
+
+// ════════════════════════════════════════════════════════════
+//  RENDER: TODOS TAB
+// ════════════════════════════════════════════════════════════
+function renderTodosTab() {
+  // Project todos section
+  const projList = document.getElementById('proj-todos-list');
+  projList.innerHTML = '';
+  state.projects.forEach(proj => {
+    const todos = getProjTodos(proj.id);
+    const active = todos.filter(t => !t.done);
+    const done = todos.filter(t => t.done);
+    const group = document.createElement('div');
+    group.className = 'proj-todos-group';
+    const chevron = active.length || done.length ? '›' : '';
+    const isOpen = ui.openProjTodosId === proj.id;
+    group.innerHTML = `<div class="proj-todos-header">
+      <div class="proj-color-dot" style="background:${proj.color}"></div>
+      <div class="proj-todos-name" style="color:${proj.color}">${proj.emoji} ${proj.name}</div>
+      <div class="proj-todos-count">${active.length} active${done.length?' · '+done.length+' done':''}</div>
+      <span class="proj-todos-chevron${isOpen?' open':''}">${chevron}</span>
+    </div>
+    <div class="proj-todos-body${isOpen?' open':''}">
+      <div class="proj-todos-items"></div>
+      <div class="add-proj-todo-row">
+        <input class="add-proj-todo-input" type="text" placeholder="Add todo for ${escAttr(proj.name)}…" data-proj="${proj.id}">
+        <button class="add-proj-todo-btn" data-proj="${proj.id}">+ Add</button>
+      </div>
+      ${done.length?`<div class="proj-todo-history">
+        <button class="proj-todo-history-toggle" data-hist="${proj.id}">▸ Show ${done.length} completed</button>
+        <div class="proj-todo-history-list" id="proj-hist-${proj.id}"></div>
+      </div>`:''}
+    </div>`;
+    const header = group.querySelector('.proj-todos-header');
+    header.addEventListener('click', () => {
+      ui.openProjTodosId = isOpen ? null : proj.id;
+      renderTodosTab();
+    });
+    const itemsEl = group.querySelector('.proj-todos-items');
+    active.forEach(t => {
+      const item = document.createElement('div');
+      item.className = 'proj-todo-item';
+      item.innerHTML = `<input type="checkbox" class="proj-todo-cb" ${t.done?'checked':''}><input type="text" class="proj-todo-text" value="${escAttr(t.text)}"><button class="proj-todo-del" title="Delete">✕</button>`;
+      item.querySelector('.proj-todo-cb').addEventListener('change', e => {
+        if (e.target.checked) {
+          completeProjTodo(proj.id, t.id, null, todayStr());
+          renderTodosTab();
+          renderTodayTodos();
+        } else {
+          t.done = false;
+          save();
+          renderTodosTab();
+          renderTodayTodos();
+        }
+      });
+      item.querySelector('.proj-todo-text').addEventListener('change', e => {
+        t.text = e.target.value;
+        save();
+      });
+      item.querySelector('.proj-todo-del').addEventListener('click', () => {
+        if (confirm('Delete this todo?')) {
+          deleteProjTodo(proj.id, t.id);
+          renderTodosTab();
+        }
+      });
+      itemsEl.appendChild(item);
+    });
+    const addInput = group.querySelector('.add-proj-todo-input');
+    const addBtn = group.querySelector('.add-proj-todo-btn');
+    const doAdd = () => {
+      addProjTodo(proj.id, addInput.value);
+      addInput.value = '';
+      ui.openProjTodosId = proj.id;
+      renderTodosTab();
+    };
+    addBtn.addEventListener('click', doAdd);
+    addInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter') doAdd();
+    });
+    const histToggle = group.querySelector('[data-hist]');
+    if (histToggle) {
+      histToggle.addEventListener('click', e => {
+        e.stopPropagation();
+        const histList = document.getElementById(`proj-hist-${proj.id}`);
+        const isHistOpen = histList.classList.contains('open');
+        histList.classList.toggle('open', !isHistOpen);
+        histToggle.textContent = isHistOpen ? `▸ Show ${done.length} completed` : `▾ Hide completed`;
+        if (!isHistOpen) {
+          histList.innerHTML = '';
+          done.forEach(t => {
+            const div = document.createElement('div');
+            div.className = 'proj-todo-hist-item';
+            const lastDone = t.history?.filter(h => h.type === 'done').slice(-1)[0];
+            const progCount = t.history?.filter(h => h.type === 'progress').length || 0;
+            div.innerHTML = `<input type="checkbox" class="proj-todo-cb" checked style="flex-shrink:0;accent-color:var(--green)"><span class="proj-todo-hist-type hist-type-done">✓</span><span style="flex:1">${escAttr(t.text)}</span>
+              ${lastDone?`<span class="proj-todo-hist-date">${lastDone.date}</span>`:''}
+              ${progCount?`<span style="color:var(--faint);font-size:8px">(${progCount} logs)</span>`:''}
+              <button class="proj-todo-del" title="Delete" style="opacity:1;color:var(--faint)">✕</button>`;
+            div.querySelector('.proj-todo-cb').addEventListener('change', e => {
+              if (!e.target.checked) {
+                t.done = false;
+                save();
+                renderTodosTab();
+                renderTodayTodos();
+              }
+            });
+            div.querySelector('.proj-todo-del').addEventListener('click', () => {
+              if (confirm('Delete this todo?')) {
+                deleteProjTodo(proj.id, t.id);
+                renderTodosTab();
+              }
+            });
+            histList.appendChild(div);
+          });
+        }
+      });
+    }
+    projList.appendChild(group);
+  });
+  // Daily todos section
+  const ds = todayStr();
+  const dailyList = document.getElementById('todos-tab-daily-list');
+  dailyList.innerHTML = '';
+  const day = getDay(ds),
+    sched = day.schedule || {};
+  const allDailyTodos = [];
+  Object.entries(day.blockNotes || {}).forEach(([idx, n]) => {
+    const proj = getProject(sched[+idx]);
+    (n.todos || []).forEach(t => {
+      allDailyTodos.push({
+        type: 'daily',
+        t,
+        blockIdx: +idx,
+        proj
+      });
+    });
+    (n.projTodos || []).forEach(ref => {
+      const todo = (getProjTodos(ref.projId) || []).find(x => x.id === ref.todoId);
+      if (!todo) return;
+      const projT = getProject(ref.projId);
+      allDailyTodos.push({
+        type: 'proj',
+        t: todo,
+        blockIdx: +idx,
+        proj: projT,
+        projId: ref.projId
+      });
+    });
+  });
+  if (!allDailyTodos.length) {
+    dailyList.innerHTML = `<div style="font-family:'DM Mono',monospace;font-size:11px;color:var(--faint);padding:8px 0">No todos yet. Add them via the 📝 notes on a block.</div>`;
+  } else {
+    allDailyTodos.forEach(({
+      type,
+      t,
+      blockIdx,
+      proj,
+      projId
+    }) => {
+      const item = document.createElement('div');
+      item.className = 'today-todo-entry';
+      const isDone = t.done || (type === 'proj' && (getProjTodos(projId) || []).find(x => x.id === t.id)?.done);
+      item.innerHTML = `<input type="checkbox" class="today-todo-cb daily-cb" ${isDone?'checked':''}><span class="today-todo-label${isDone?' done':''}">${escAttr(t.text)}</span>${proj?`<span style="font-family:'DM Mono',monospace;font-size:9px;color:${proj.color};margin-left:auto">${proj.emoji}</span>`:''}`;
+      item.querySelector('.today-todo-cb').addEventListener('change', e => {
+        if (type === 'daily') {
+          const dayD = getDay(ds);
+          const bn = dayD.blockNotes[blockIdx];
+          if (bn) {
+            const todo = bn.todos.find(x => x.id === t.id);
+            if (todo) {
+              todo.done = e.target.checked;
+              setDay(ds, dayD);
+              save();
+              renderTodosTab();
+              renderTodayTodos();
+            }
+          }
+        } else {
+          if (e.target.checked) {
+            completeProjTodo(projId, t.id, blockIdx, ds);
+            renderTodosTab();
+            renderTodayTodos();
+          } else e.target.checked = false;
+        }
+      });
+      dailyList.appendChild(item);
+    });
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+//  RENDER: TODAY TODOS PANEL (in Today tab)
+// ════════════════════════════════════════════════════════════
+function renderTodayTodos() {
+  const list = document.getElementById('today-todos-list');
+  if (!list) return;
+  list.innerHTML = '';
+  const ds = todayStr();
+  const day = getDay(ds);
+  const sched = day.schedule || {};
+
+  // ── Active section ──────────────────────────────────────
+  // 1. Daily block todos (not done)
+  // 2. Project todos explicitly pinned to a block via blockNotes.projTodos (not done, not progressed-only)
+  const activeItems = []; // {type:'daily'|'proj', ...data}
+  const completedItems = []; // {type:'daily'|'proj', ...data}
+
+  // Collect daily todos from block notes
+  Object.entries(day.blockNotes || {}).forEach(([rawIdx, n]) => {
+    const idx = +rawIdx;
+    const proj = getProject(sched[idx]);
+    (n.todos || []).forEach(t => {
+      const entry = {
+        type: 'daily',
+        t,
+        idx,
+        proj
+      };
+      if (t.done) completedItems.push(entry);
+      else activeItems.push(entry);
+    });
+    // Project todos pinned to this block
+    (n.projTodos || []).forEach(ref => {
+      const projT = getProject(ref.projId);
+      const todoList = getProjTodos(ref.projId);
+      const todo = todoList.find(x => x.id === ref.todoId);
+      if (!todo) return;
+      const progressed = hasProjTodoProgressToday(ref.projId, ref.todoId, ds);
+      const entry = {
+        type: 'proj',
+        todo,
+        proj: projT,
+        projId: ref.projId,
+        blockIdx: idx
+      };
+      if (todo.done) completedItems.push(entry);
+      else if (progressed) completedItems.push({
+        ...entry,
+        progressOnly: true
+      });
+      else activeItems.push(entry);
+    });
+  });
+
+  const hasAnything = activeItems.length || completedItems.length;
+  if (!hasAnything) {
+    list.innerHTML = `<div style="font-family:'DM Mono',monospace;font-size:10px;color:var(--faint);padding:4px 0">No todos yet. Add them via 📝 notes on a block.</div>`;
+    return;
+  }
+
+  // ── Render active ──────────────────────────────────────
+  if (activeItems.length) {
+    const activeWrap = document.createElement('div');
+    activeWrap.style.marginBottom = '10px';
+    activeItems.forEach(entry => {
+      const item = document.createElement('div');
+      item.className = 'today-todo-entry';
+      if (entry.type === 'daily') {
+        const {
+          t,
+          idx,
+          proj
+        } = entry;
+        const [h, half] = blockToTime(idx);
+        item.innerHTML = `<input type="checkbox" class="today-todo-cb daily-cb" title="Mark done"><span class="today-todo-label">${escAttr(t.text)}</span>${proj?`<span style="font-family:'DM Mono',monospace;font-size:9px;color:${proj.color};margin-left:auto">${proj.emoji} ${formatTime(h,half)}</span>`:''}`;
+        item.querySelector('.today-todo-cb').addEventListener('change', e => {
+          const dayD = getDay(ds);
+          const bn = dayD.blockNotes[idx];
+          if (bn) {
+            const todo = bn.todos.find(x => x.id === t.id);
+            if (todo) {
+              todo.done = e.target.checked;
+              setDay(ds, dayD);
+              save();
+              renderTodayTodos();
+              if (ui.tab === 'todos') renderTodosTab();
+            }
+          }
+        });
+      } else {
+        // proj todo
+        const {
+          todo,
+          proj,
+          projId,
+          blockIdx
+        } = entry;
+        item.innerHTML = `<input type="checkbox" class="today-todo-cb proj-cb-done" title="Mark fully done"><span class="today-todo-label">${escAttr(todo.text)}</span>${proj?`<span style="font-family:'DM Mono',monospace;font-size:9px;color:${proj.color};margin-left:4px">${proj.emoji}</span>`:''}
+          <button class="today-todo-progress-btn" title="Log progress today (stays active)">+ progress</button>`;
+        item.querySelector('.today-todo-cb').addEventListener('change', e => {
+          if (e.target.checked) {
+            completeProjTodo(projId, todo.id, blockIdx, ds);
+            renderTodayTodos();
+            if (ui.tab === 'todos') renderTodosTab();
+          } else e.target.checked = false;
+        });
+        item.querySelector('.today-todo-progress-btn').addEventListener('click', () => {
+          progressProjTodo(projId, todo.id, blockIdx, ds);
+          renderTodayTodos();
+          if (ui.tab === 'todos') renderTodosTab();
+        });
+      }
+      activeWrap.appendChild(item);
+    });
+    list.appendChild(activeWrap);
+  }
+
+  // ── Render completed/progressed today ─────────────────
+  if (completedItems.length) {
+    const doneSection = document.createElement('div');
+    doneSection.innerHTML = `<div style="font-family:'DM Mono',monospace;font-size:9px;color:var(--muted);letter-spacing:.1em;text-transform:uppercase;margin:10px 0 6px;border-top:1px solid var(--border);padding-top:10px">Done Today (${completedItems.length})</div>`;
+    completedItems.forEach(entry => {
+      const item = document.createElement('div');
+      item.className = 'today-todo-entry';
+      item.style.opacity = '.6';
+      if (entry.type === 'daily') {
+        const {
+          t,
+          proj
+        } = entry;
+        item.innerHTML = `<input type="checkbox" class="today-todo-cb daily-cb" checked><span class="today-todo-label done">${escAttr(t.text)}</span>${proj?`<span style="font-family:'DM Mono',monospace;font-size:9px;color:${proj.color};margin-left:auto">${proj.emoji}</span>`:''}`;
+        item.querySelector('.today-todo-cb').addEventListener('change', e => {
+          const dayD = getDay(ds);
+          const bn = dayD.blockNotes[entry.idx];
+          if (bn) {
+            const todo = bn.todos.find(x => x.id === t.id);
+            if (todo) {
+              todo.done = e.target.checked;
+              setDay(ds, dayD);
+              save();
+              renderTodayTodos();
+              if (ui.tab === 'todos') renderTodosTab();
+            }
+          }
+        });
+      } else {
+        const {
+          todo,
+          proj,
+          projId,
+          progressOnly
+        } = entry;
+        const badge = progressOnly ?
+          `<span style="font-family:'DM Mono',monospace;font-size:8px;padding:1px 5px;border-radius:3px;background:rgba(232,201,122,.12);color:var(--gold)">progress</span>` :
+          `<span style="font-family:'DM Mono',monospace;font-size:8px;padding:1px 5px;border-radius:3px;background:rgba(124,184,124,.12);color:var(--green)">✓ done</span>`;
+        item.innerHTML = `${badge}<span class="today-todo-label done" style="margin-left:5px">${escAttr(todo.text)}</span>${proj?`<span style="font-family:'DM Mono',monospace;font-size:9px;color:${proj.color};margin-left:auto">${proj.emoji}</span>`:''}`;
+        if (progressOnly) {
+          // allow un-progressing
+          item.style.cursor = 'pointer';
+          item.title = 'Click to remove progress log';
+          item.addEventListener('click', () => {
+            progressProjTodo(projId, todo.id, entry.blockIdx, ds);
+            renderTodayTodos();
+            if (ui.tab === 'todos') renderTodosTab();
+          });
+        }
+      }
+      doneSection.appendChild(item);
+    });
+    list.appendChild(doneSection);
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+//  RENDER: HEADER STATS
+// ════════════════════════════════════════════════════════════
+function renderHeaderStats() {
+  const day = currentDayData(),
+    s = computeStats();
+  document.getElementById('stat-planned').textContent = Object.keys(day.schedule || {}).length;
+  document.getElementById('stat-done').textContent = (day.completed || []).length;
+  const goal = dailyGoal(),
+    done = (day.completed || []).length;
+  const pct = goal > 0 ? Math.round(done / goal * 100) : 0;
+  document.getElementById('stat-goal-pct').textContent = goal ? `${pct}%` : '—';
+  document.getElementById('stat-avg').textContent = s.avg;
+  document.getElementById('stat-streak').textContent = s.streak + 'd';
+  document.getElementById('stat-best').textContent = s.best;
+}
+
+function renderDateNav() {
+  document.getElementById('date-display').textContent = formatDateLabel(ui.currentDate);
+  const days = [todayStr(), ...sortedDays()].filter((v, i, a) => a.indexOf(v) === i).sort().reverse();
+  const idx = days.indexOf(ui.currentDate);
+  document.getElementById('nav-prev').disabled = false;
+  document.getElementById('nav-next').disabled = idx <= 0;
+  document.getElementById('readonly-badge').style.display = 'none';
+  // time-off toggle — always visible for any day
+  const day = currentDayData();
+  const btn = document.getElementById('timeoff-btn');
+  btn.textContent = day.timeOff ? 'ON' : 'OFF';
+  btn.classList.toggle('on', !!day.timeOff);
+  btn.style.display = '';
+  document.getElementById('timeoff-label').style.display = '';
+}
+
+// ════════════════════════════════════════════════════════════
+//  RENDER: SIDEBAR
+// ════════════════════════════════════════════════════════════
+function renderSidebar() {
+  const list = document.getElementById('proj-list');
+  list.innerHTML = '';
+  state.projects.forEach(p => {
+    const row = document.createElement('div');
+    row.className = 'proj-row';
+    row.style.background = p.color + '18';
+    if (ui.editingProjId === p.id) {
+      row.style.cursor = 'default';
+      row.innerHTML = `<div style="display:flex;gap:4px;align-items:center;width:100%">
+        <input class="mini-input emoji-input" style="width:32px;padding:2px;font-size:13px" value="${escAttr(p.emoji)}" id="ee-${p.id}">
+        <input class="color-input" type="color" value="${p.color}" id="ec-${p.id}">
+        <input class="proj-edit-input" id="en-${p.id}" value="${escAttr(p.name)}">
+        <button class="icon-btn" id="es-${p.id}">✓</button>
+        <button class="icon-btn" id="ex2-${p.id}">✕</button></div>`;
+      list.appendChild(row);
+      document.getElementById(`en-${p.id}`).addEventListener('keydown', e => {
+        if (e.key === 'Enter') saveEditProject(p.id);
+        if (e.key === 'Escape') {
+          ui.editingProjId = null;
+          renderSidebar();
+        }
+      });
+      document.getElementById(`es-${p.id}`).onclick = () => saveEditProject(p.id);
+      document.getElementById(`ex2-${p.id}`).onclick = () => {
+        ui.editingProjId = null;
+        renderSidebar();
+      };
+    } else {
+      row.draggable = true;
+      row.innerHTML = `<div class="proj-color-dot" style="background:${p.color}"></div>
+        <div class="proj-name-display" style="color:${p.color}">${p.emoji} ${p.name}</div>
+        <div class="proj-actions" style="opacity:0">
+          <button class="icon-btn" data-edit="${p.id}">✎</button>
+          <button class="icon-btn danger" data-del="${p.id}">✕</button></div>`;
+      list.appendChild(row);
+      row.querySelector('[data-edit]').onclick = e => {
+        e.stopPropagation();
+        ui.editingProjId = p.id;
+        renderSidebar();
+      };
+      row.querySelector('[data-del]').onclick = e => {
+        e.stopPropagation();
+        if (confirm(`Delete "${p.name}"?`)) {
+          state.projects = state.projects.filter(x => x.id !== p.id);
+          save();
+          renderAll();
+        }
+      };
+      // drag from sidebar onto schedule
+      row.addEventListener('dragstart', e => {
+        ui.dragProjId = p.id;
+        ui.dragSrcIdx = null;
+        row.classList.add('proj-dragging');
+        e.dataTransfer.effectAllowed = 'copy';
+        e.dataTransfer.setData('proj', p.id);
+      });
+      row.addEventListener('dragend', () => {
+        row.classList.remove('proj-dragging');
+        ui.dragProjId = null;
+      });
+    }
+  });
+  // Goal input
+  document.getElementById('goal-input').value = dailyGoal();
+  // project stats
+  const statList = document.getElementById('proj-stat-list');
+  statList.innerHTML = '';
+  const day = currentDayData(),
+    sched = day.schedule || {},
+    done = new Set(day.completed || []);
+  state.projects.forEach(p => {
+    const planned = Object.values(sched).filter(id => id === p.id).length;
+    const completed = Object.entries(sched).filter(([i, id]) => id === p.id && done.has(+i)).length;
+    if (!planned) return;
+    const div = document.createElement('div');
+    div.className = 'proj-stat-bar';
+    div.innerHTML = `<div class="proj-stat-top"><span class="proj-stat-name" style="color:${p.color}">${p.emoji} ${p.name}</span><span class="proj-stat-count">${completed}/${planned}</span></div>
+      <div class="bar-track"><div class="bar-fill" style="width:${(completed/planned)*100}%;background:${p.color}"></div></div>`;
+    statList.appendChild(div);
+  });
+}
+
+function saveEditProject(id) {
+  const name = document.getElementById(`en-${id}`)?.value?.trim();
+  if (!name) return;
+  const p = state.projects.find(x => x.id === id);
+  if (p) {
+    p.name = name;
+    p.emoji = document.getElementById(`ee-${id}`)?.value || p.emoji;
+    p.color = document.getElementById(`ec-${id}`)?.value || p.color;
+  }
+  ui.editingProjId = null;
+  save();
+  renderAll();
+}
+
+// ════════════════════════════════════════════════════════════
+//  RENDER: PLAN GRID
+// ════════════════════════════════════════════════════════════
+function closeDropdown() {
+  if (ui.openDropdown !== null) {
+    const el = document.getElementById(`dd-${ui.openDropdown}`);
+    if (el) el.remove();
+    ui.openDropdown = null;
+  }
+}
+
+function openDropdown(blockIdx) {
+  closeDropdown();
+  ui.openDropdown = blockIdx;
+  const anchor = document.getElementById(`actions-${blockIdx}`);
+  if (!anchor) return;
+  const dd = document.createElement('div');
+  dd.className = 'dropdown';
+  dd.id = `dd-${blockIdx}`;
+  state.projects.forEach(p => {
+    const item = document.createElement('div');
+    item.className = 'dropdown-item';
+    item.style.color = p.color;
+    // Project name (left, fills space)
+    const nameSpan = document.createElement('span');
+    nameSpan.style.flex = '1';
+    nameSpan.textContent = `${p.emoji} ${p.name}`;
+    item.appendChild(nameSpan);
+    // 30m button
+    const btn30 = document.createElement('button');
+    btn30.className = 'dd-dur-btn';
+    btn30.textContent = '30m';
+    btn30.onclick = e => {
+      e.stopPropagation();
+      assignBlock(blockIdx, p.id);
+    };
+    item.appendChild(btn30);
+    // 1h button (only if next slot exists)
+    if (blockIdx + 1 <= 35) {
+      const btn1h = document.createElement('button');
+      btn1h.className = 'dd-dur-btn gold';
+      btn1h.textContent = '1h';
+      btn1h.onclick = e => {
+        e.stopPropagation();
+        assignBlock1hr(blockIdx, p.id);
+      };
+      item.appendChild(btn1h);
+    }
+    dd.appendChild(item);
+  });
+  anchor.appendChild(dd);
+}
+
+function updateTimeneedle() {
+  const needle = document.getElementById('time-needle');
+  if (ui.tab !== 'plan') {
+    needle.style.display = 'none';
+    return;
+  }
+  const hf = currentHourFrac();
+  if (hf < 6 || hf > 24) {
+    needle.style.display = 'none';
+    return;
+  }
+  const blockIdx = Math.min(Math.floor((hf - 6) * 2), 35);
+  const rowEl = document.getElementById(`block-row-${blockIdx}`);
+  if (!rowEl) {
+    needle.style.display = 'none';
+    return;
+  }
+  const panel = document.getElementById('plan-panel');
+  const relTop = rowEl.getBoundingClientRect().top - panel.getBoundingClientRect().top + panel.scrollTop;
+  // Place needle at the TOP of the current block row (before the block)
+  needle.style.display = 'block';
+  needle.style.top = relTop + 'px';
+  const now = new Date(),
+    hr = now.getHours() % 12 || 12,
+    mn = String(now.getMinutes()).padStart(2, '0'),
+    ap = now.getHours() < 12 ? 'AM' : 'PM';
+  document.getElementById('time-needle-label').textContent = `${hr}:${mn} ${ap}`;
+}
+
+function renderPlanBanner() {
+  const planBanner = document.getElementById('plan-active-banner');
+  const planBannerName = document.getElementById('plan-active-banner-name');
+  const planBannerBtn = document.getElementById('plan-active-banner-btn');
+  if (!planBanner) return;
+  if (ui.activeBlock !== null && isToday()) {
+    const proj = getProject((currentDayData().schedule || {})[ui.activeBlock]);
+    const [bh, bhalf] = blockToTime(ui.activeBlock);
+    if (planBannerName) planBannerName.textContent = `● Active: ${proj?`${proj.emoji} ${proj.name}`:'block'} · ${formatTime(bh,bhalf)} · ${formatSecs(getTimerRemaining())} remaining`;
+    planBanner.style.display = 'block';
+    if (planBannerBtn) planBannerBtn.onclick = () => {
+      switchTab('today');
+      showBlockFocus(ui.activeBlock);
+    };
+  } else {
+    planBanner.style.display = 'none';
+  }
+}
+
+function renderScheduleGrid() {
+  renderPlanBanner();
+  const grid = document.getElementById('schedule-grid');
+  grid.innerHTML = '';
+  const day = currentDayData(),
+    sched = day.schedule || {},
+    done = new Set(day.completed || []);
+  const blockSpan = day.blockSpan || {};
+  // Build set of slots that are spanned (should not be rendered as their own row)
+  const spannedSlots = new Set();
+  Object.entries(blockSpan).forEach(([startIdx, span]) => {
+    for (let i = 1; i < span; i++) spannedSlots.add(+startIdx + i);
+  });
+  const readOnly = false;
+  for (let h = 6; h <= 23; h++) {
+    const group = document.createElement('div');
+    group.className = 'hour-group';
+    const lbl = document.createElement('div');
+    lbl.className = 'hour-label';
+    lbl.textContent = formatTime(h, false);
+    group.appendChild(lbl);
+    const blocks = document.createElement('div');
+    blocks.className = 'hour-blocks';
+    for (let half = 0; half < 2; half++) {
+      const idx = (h - 6) * 2 + half;
+      // Skip slots that are part of a span (visually merged into the start slot)
+      if (spannedSlots.has(idx)) continue;
+      const projId = sched[idx],
+        proj = projId ? getProject(projId) : null;
+      const span = blockSpan[idx] || 1;
+      const isCompleted = done.has(idx),
+        isActive = ui.activeBlock === idx,
+        hasNotes = blockHasContent(idx);
+      const row = document.createElement('div');
+      const baseClass = 'block-row ' + (half === 0 ? 'block-divider-solid' : 'block-divider-dashed');
+      row.className = baseClass + (span >= 2 ? ' block-row-1h' : '');
+      row.id = `block-row-${idx}`;
+      row.dataset.idx = idx;
+      if (half === 1 && span < 2) {
+        const hl = document.createElement('div');
+        hl.className = 'block-half-label';
+        hl.textContent = formatTime(h, true);
+        row.appendChild(hl);
+      }
+      if (!readOnly && proj) {
+        const dh = document.createElement('span');
+        dh.className = 'drag-handle';
+        dh.textContent = '⠿';
+        dh.title = 'Drag to move';
+        row.appendChild(dh);
+      }
+      const bar = document.createElement('div');
+      bar.className = 'color-bar';
+      bar.style.background = proj ? proj.color : 'var(--bg3)';
+      bar.style.opacity = isCompleted ? '.35' : '1';
+      if (span >= 2) bar.style.height = '50px';
+      row.appendChild(bar);
+      const label = document.createElement('div');
+      label.className = 'block-label';
+      label.style.flexDirection = 'column';
+      label.style.alignItems = 'flex-start';
+      label.style.gap = '3px';
+      if (proj) {
+        label.style.color = isCompleted ? 'var(--faint)' : proj.color;
+        // Build label content
+        const nameLine = document.createElement('div');
+        nameLine.style.display = 'flex';
+        nameLine.style.alignItems = 'center';
+        nameLine.style.gap = '5px';
+        nameLine.innerHTML = `${proj.emoji} ${proj.name}`;
+        if (isCompleted) nameLine.innerHTML += ` <span class="badge-done">✓</span>`;
+        if (isActive) nameLine.innerHTML += ` <span class="badge-active pulse">● active</span>`;
+        if (hasNotes) nameLine.innerHTML += ` <span class="badge-notes" title="Notes">📝</span>`;
+        label.appendChild(nameLine);
+        // For 1-hour blocks, show time range + badge
+        if (span >= 2) {
+          const timeLine = document.createElement('div');
+          timeLine.style.cssText = 'font-size:9px;color:var(--faint);display:flex;align-items:center;gap:6px';
+          const [eh, ehalf] = blockToTime(idx + span);
+          timeLine.innerHTML = `${formatTime(h,half===1)} → ${formatTime(eh,ehalf===1)} <span class="block-1h-badge">1h</span>`;
+          label.appendChild(timeLine);
+        }
+        label.querySelector('.badge-notes')?.addEventListener('click', e => {
+          e.stopPropagation();
+          openNotesModal(idx);
+        });
+      } else {
+        label.style.color = 'var(--faint)';
+        label.textContent = '—';
+      }
+      row.appendChild(label);
+      if (!readOnly) {
+        const actions = document.createElement('div');
+        actions.className = 'block-actions';
+        actions.id = `actions-${idx}`;
+        actions.style.opacity = '0';
+        if (proj && !isCompleted && !isActive && isToday()) {
+          const sb = document.createElement('button');
+          sb.className = 'start-btn-small';
+          sb.textContent = '▶ start';
+          sb.onclick = e => {
+            e.stopPropagation();
+            startTimer(idx);
+          };
+          actions.appendChild(sb);
+        }
+        if (proj && !isCompleted) {
+          const db = document.createElement('button');
+          db.className = 'done-btn-small';
+          db.textContent = '✓ done';
+          db.onclick = e => {
+            e.stopPropagation();
+            completeBlock(idx);
+            renderScheduleGrid();
+            renderSidebar();
+            renderTodayTab();
+            renderHeaderStats();
+          };
+          actions.appendChild(db);
+        }
+        if (proj && isCompleted) {
+          const ub = document.createElement('button');
+          ub.className = 'undone-btn-small';
+          ub.textContent = '✗ undo';
+          ub.onclick = e => {
+            e.stopPropagation();
+            const dayD = currentDayData();
+            const sp = blockSpan[idx] || 1;
+            for (let i = 0; i < sp; i++) dayD.completed = dayD.completed.filter(x => x !== idx + i);
+            setDay(ui.currentDate, dayD);
+            save();
+            renderScheduleGrid();
+            renderSidebar();
+            renderTodayTab();
+            renderHeaderStats();
+          };
+          actions.appendChild(ub);
+        }
+        if (proj) {
+          const nb = document.createElement('button');
+          nb.className = 'notes-btn' + (hasNotes ? ' has-content' : '');
+          nb.textContent = '📝';
+          nb.title = 'Notes';
+          nb.onclick = e => {
+            e.stopPropagation();
+            openNotesModal(idx);
+          };
+          actions.appendChild(nb);
+        }
+        const ab = document.createElement('button');
+        ab.className = 'assign-btn';
+        ab.textContent = proj ? 'change' : '+ assign';
+        ab.onclick = e => {
+          e.stopPropagation();
+          openDropdown(idx);
+        };
+        actions.appendChild(ab);
+        if (proj) {
+          const cb = document.createElement('button');
+          cb.className = 'clear-btn';
+          cb.textContent = '✕';
+          cb.onclick = e => {
+            e.stopPropagation();
+            clearBlock(idx);
+          };
+          actions.appendChild(cb);
+        }
+        row.appendChild(actions);
+      }
+      // Block-to-block drag (only for 30-min blocks; skip drag for spans to keep it simple)
+      if (!readOnly && proj && span < 2) {
+        row.draggable = true;
+        row.addEventListener('dragstart', e => {
+          if (ui.dragProjId) return;
+          ui.dragSrcIdx = idx;
+          row.classList.add('dragging');
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('blockIdx', String(idx));
+        });
+        row.addEventListener('dragend', () => {
+          row.classList.remove('dragging');
+          ui.dragSrcIdx = null;
+          document.querySelectorAll('.block-row.drag-over,.block-row.proj-drop-target').forEach(r => r.classList.remove('drag-over', 'proj-drop-target'));
+        });
+      }
+      if (!readOnly) {
+        row.addEventListener('dragover', e => {
+          e.preventDefault();
+          document.querySelectorAll('.block-row.drag-over,.block-row.proj-drop-target').forEach(r => r.classList.remove('drag-over', 'proj-drop-target'));
+          if (ui.dragSrcIdx !== null && ui.dragSrcIdx !== idx) {
+            e.dataTransfer.dropEffect = 'move';
+            row.classList.add('drag-over');
+          } else if (ui.dragProjId) {
+            e.dataTransfer.dropEffect = 'copy';
+            row.classList.add('proj-drop-target');
+          }
+        });
+        row.addEventListener('dragleave', () => row.classList.remove('drag-over', 'proj-drop-target'));
+        row.addEventListener('drop', e => {
+          e.preventDefault();
+          row.classList.remove('drag-over', 'proj-drop-target');
+          const projData = e.dataTransfer.getData('proj');
+          const blockData = e.dataTransfer.getData('blockIdx');
+          if (projData) {
+            assignBlock(idx, projData);
+          } else if (blockData) {
+            const srcIdx = parseInt(blockData);
+            if (!isNaN(srcIdx) && srcIdx !== idx) moveBlock(srcIdx, idx);
+          }
+        });
+      }
+      blocks.appendChild(row);
+    }
+    group.appendChild(blocks);
+    grid.appendChild(group);
+  }
+  setTimeout(updateTimeneedle, 0);
+}
+
+// ════════════════════════════════════════════════════════════
+//  RENDER: TIMER CARD
+// ════════════════════════════════════════════════════════════
+function renderTimerCard() {
+  const remaining = getTimerRemaining(),
+    dur = getBlockDuration(ui.activeBlock),
+    pct = (dur - remaining) / dur;
+  document.getElementById('timer-ring').style.strokeDashoffset = CIRC * (1 - pct);
+  document.getElementById('timer-display').textContent = formatSecs(remaining);
+  const day = currentDayData(),
+    done = (day.completed || []).length;
+  document.getElementById('t-blocks').textContent = done;
+  document.getElementById('t-hours').textContent = (done * .5).toFixed(1) + 'h';
+  if (ui.activeBlock !== null) {
+    const proj = getProject((day.schedule || {})[ui.activeBlock]);
+    document.getElementById('timer-project-name').textContent = proj ? `${proj.emoji} ${proj.name}` : 'Active block';
+    document.getElementById('timer-ring').style.stroke = proj ? proj.color : 'var(--gold)';
+    document.getElementById('timer-controls').innerHTML = `<button class="timer-btn" id="tp-btn">${ui.timerRunning?'⏸ Pause':'▶ Resume'}</button><button class="timer-btn ghost" id="td-btn">✓ Done</button>`;
+    document.getElementById('tp-btn').onclick = pauseResumeTimer;
+    document.getElementById('td-btn').onclick = doneTimer;
+  } else {
+    document.getElementById('timer-project-name').textContent = 'No active block';
+    document.getElementById('timer-ring').style.stroke = 'var(--gold)';
+    document.getElementById('timer-controls').innerHTML = `<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--faint)">Start a block →</span>`;
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+//  RENDER: GAMIFICATION PANEL
+// ════════════════════════════════════════════════════════════
+function renderGamePanel() {
+  const day = currentDayData(),
+    done = (day.completed || []).length,
+    goal = dailyGoal();
+  const s = computeStats();
+  // Goal bar
+  const goalPct = Math.min(100, goal > 0 ? done / goal * 100 : 0);
+  document.getElementById('gv-goal').textContent = `${done}/${goal}`;
+  const gb = document.getElementById('gb-goal');
+  gb.style.width = goalPct + '%';
+  // Badge
+  const badgeEl = document.getElementById('gv-goal-badge');
+  if (done === 0) {
+    badgeEl.innerHTML = '';
+  } else if (done >= goal * 2) {
+    badgeEl.innerHTML = `<span class="game-badge" style="background:rgba(232,201,122,.2);color:var(--gold)">🏆 DOUBLE GOAL!</span>`;
+  } else if (done >= goal) {
+    badgeEl.innerHTML = `<span class="game-badge" style="background:rgba(124,184,124,.15);color:var(--green)">✓ GOAL MET</span>`;
+  } else {
+    const left = goal - done;
+    badgeEl.innerHTML = `<span class="game-badge" style="background:var(--bg3);color:var(--muted)">${left} block${left!==1?'s':''} to go</span>`;
+  }
+  // Streak bar (cap at 30 for display)
+  document.getElementById('gv-streak').textContent = s.streak + 'd';
+  document.getElementById('gb-streak').style.width = Math.min(100, s.streak / 30 * 100) + '%';
+  // Completion rate
+  document.getElementById('gv-rate').textContent = s.rate + '%';
+  document.getElementById('gb-rate').style.width = s.rate + '%';
+  // Momentum/decay
+  const m = s.momentum;
+  document.getElementById('gv-decay').textContent = m;
+  const df = document.getElementById('decay-bar-fill');
+  df.style.width = m + '%';
+  const color = m >= 70 ? 'var(--green)' : m >= 40 ? 'var(--gold)' : m >= 20 ? 'var(--orange)' : 'var(--red)';
+  df.style.background = color;
+  document.getElementById('gv-decay').style.color = color;
+  const hint = m >= 70 ? 'Strong momentum — keep it up!' :
+    m >= 40 ? 'Momentum steady — don\'t break the chain' :
+    m >= 20 ? 'Momentum fading — get back on track' :
+    'Momentum critical — time to rebuild';
+  document.getElementById('decay-hint').textContent = hint;
+}
+
+// ════════════════════════════════════════════════════════════
+//  RENDER: TODAY TAB
+// ════════════════════════════════════════════════════════════
+
+// ════════════════════════════════════════════════════════════
+//  BLOCK FOCUS VIEW
+// ════════════════════════════════════════════════════════════
+
+// ════════════════════════════════════════════════════════════
+//  MARKDOWN RENDERER
+// ════════════════════════════════════════════════════════════
+function applyInlineMd(text) {
+  return text
+    .replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*([^*\n]+?)\*/g, '<em>$1</em>')
+    .replace(/__(.+?)__/g, '<strong>$1</strong>')
+    .replace(/_([^_\n]+?)_/g, '<em>$1</em>')
+    .replace(/~~(.+?)~~/g, '<span style="text-decoration:line-through;color:var(--faint)">$1</span>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+}
+
+function renderMarkdown(text) {
+  if (!text || !text.trim()) return '<span style="color:var(--faint);font-style:italic;font-size:11px">No notes yet. Click Edit to write.</span>';
+  const lines = text.split('\n');
+  const out = [];
+  let inUl = false,
+    inOl = false;
+  const closeList = () => {
+    if (inUl) {
+      out.push('</ul>');
+      inUl = false;
+    }
+    if (inOl) {
+      out.push('</ol>');
+      inOl = false;
+    }
+  };
+  lines.forEach(raw => {
+    const l = raw.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    if (/^### /.test(l)) {
+      closeList();
+      out.push(`<h3>${applyInlineMd(l.slice(4))}</h3>`);
+      return;
+    }
+    if (/^## /.test(l)) {
+      closeList();
+      out.push(`<h2>${applyInlineMd(l.slice(3))}</h2>`);
+      return;
+    }
+    if (/^# /.test(l)) {
+      closeList();
+      out.push(`<h1>${applyInlineMd(l.slice(2))}</h1>`);
+      return;
+    }
+    if (/^---+$|^\*\*\*+$/.test(l.trim())) {
+      closeList();
+      out.push('<hr>');
+      return;
+    }
+    if (/^> /.test(l)) {
+      closeList();
+      out.push(`<blockquote>${applyInlineMd(l.slice(2))}</blockquote>`);
+      return;
+    }
+    // Checkboxes
+    if (/^- \[ \] |^\* \[ \] /.test(l)) {
+      if (!inUl) {
+        out.push('<ul style="list-style:none;padding-left:4px">');
+        inUl = true;
+      }
+      out.push(`<li>☐ ${applyInlineMd(l.slice(6))}</li>`);
+      return;
+    }
+    if (/^- \[x\] |^- \[X\] /.test(l)) {
+      if (!inUl) {
+        out.push('<ul style="list-style:none;padding-left:4px">');
+        inUl = true;
+      }
+      out.push(`<li style="color:var(--faint);text-decoration:line-through"><span style="color:var(--green);text-decoration:none">☑</span> ${applyInlineMd(l.slice(6))}</li>`);
+      return;
+    }
+    // Lists
+    if (/^[-*] /.test(l)) {
+      if (inOl) {
+        out.push('</ol>');
+        inOl = false;
+      }
+      if (!inUl) {
+        out.push('<ul>');
+        inUl = true;
+      }
+      out.push(`<li>${applyInlineMd(l.slice(2))}</li>`);
+      return;
+    }
+    const nm = l.match(/^(\d+)\. (.+)/);
+    if (nm) {
+      if (inUl) {
+        out.push('</ul>');
+        inUl = false;
+      }
+      if (!inOl) {
+        out.push('<ol>');
+        inOl = true;
+      }
+      out.push(`<li>${applyInlineMd(nm[2])}</li>`);
+      return;
+    }
+    closeList();
+    if (!l.trim()) {
+      out.push('<p style="margin:3px 0"></p>');
+      return;
+    }
+    out.push(`<p>${applyInlineMd(l)}</p>`);
+  });
+  closeList();
+  return out.join('');
+}
+
+function saveInlineNote(el) {
+  el.style.background = '';
+  el.style.border = '';
+  el.style.margin = '';
+  const ds = el.dataset.date;
+  const idx = +el.dataset.idx;
+  const text = el.innerText.trim();
+  const day = getDay(ds);
+  if (!day.blockNotes[idx]) day.blockNotes[idx] = {
+    note: '',
+    todos: []
+  };
+  day.blockNotes[idx].note = text;
+  setDay(ds, day);
+  save();
+}
+
+function showBlockFocus(blockIdx) {
+  ui.focusBlock = blockIdx;
+  document.getElementById('today-timeline').classList.add('hidden');
+  const fv = document.getElementById('block-focus-view');
+  fv.classList.add('active');
+  renderBlockFocus();
+}
+
+function hideBlockFocus() {
+  ui.focusBlock = null;
+  document.getElementById('today-timeline').classList.remove('hidden');
+  document.getElementById('block-focus-view').classList.remove('active');
+  // Show return banner if there's still an active block running
+  const returnBanner = document.getElementById('return-to-focus-banner');
+  const returnBtn = document.getElementById('return-to-focus-btn');
+  if (returnBanner) {
+    returnBanner.style.display = ui.activeBlock !== null ? 'block' : 'none';
+    if (returnBtn) returnBtn.onclick = () => showBlockFocus(ui.activeBlock);
+  }
+}
+
+function renderBlockFocus() {
+  const blockIdx = ui.focusBlock;
+  if (blockIdx === null || blockIdx === undefined) return;
+  const ds = todayStr();
+  const day = getDay(ds);
+  const proj = getProject((day.schedule || {})[blockIdx]);
+  const bn = (day.blockNotes || {})[blockIdx] || {
+    note: '',
+    todos: []
+  };
+  const [h, half] = blockToTime(blockIdx);
+  const span = (day.blockSpan || {})[blockIdx] || 1;
+  const timeLabel = span >= 2 ? `${formatTime(h,half)} → ${formatTime(...blockToTime(blockIdx+span))}` : `${formatTime(h,half)}`;
+
+  // Header
+  document.getElementById('block-focus-title').textContent = proj ? `${proj.emoji} ${proj.name}` : 'Block';
+  document.getElementById('block-focus-title').style.color = proj ? proj.color : 'var(--text)';
+  document.getElementById('block-focus-time').textContent = timeLabel;
+
+  // ── Importance stars ──
+  const focusImpVal = bn.importance || 0;
+
+  function updateFocusStars(val) {
+    document.querySelectorAll('#focus-star-picker .star-btn').forEach(b => b.classList.toggle('active', +b.dataset.val <= val));
+  }
+  updateFocusStars(focusImpVal);
+  document.querySelectorAll('#focus-star-picker .star-btn').forEach(btn => {
+    btn.onclick = () => {
+      const cur = [...document.querySelectorAll('#focus-star-picker .star-btn')].filter(b => b.classList.contains('active')).length;
+      const newVal = (cur === +btn.dataset.val) ? 0 : +btn.dataset.val;
+      updateFocusStars(newVal);
+      // Auto-save importance immediately
+      const dayD = getDay(ds);
+      if (!dayD.blockNotes[blockIdx]) dayD.blockNotes[blockIdx] = {
+        note: '',
+        todos: []
+      };
+      dayD.blockNotes[blockIdx].importance = newVal || null;
+      setDay(ds, dayD);
+      save();
+    };
+  });
+  document.getElementById('focus-clear-imp-btn').onclick = () => {
+    updateFocusStars(0);
+    const dayD = getDay(ds);
+    if (dayD.blockNotes[blockIdx]) dayD.blockNotes[blockIdx].importance = null;
+    setDay(ds, dayD);
+    save();
+  };
+
+  // ── Note with dirty-state tracking + markdown ──
+  const noteArea = document.getElementById('block-focus-note-area');
+  const mdPreview = document.getElementById('block-focus-md-preview');
+  const saveBtn = document.getElementById('block-focus-save-note');
+  const saveStatus = document.getElementById('focus-save-status');
+  const editBtn = document.getElementById('focus-mode-edit');
+  const previewBtn = document.getElementById('focus-mode-preview');
+
+  noteArea.value = bn.note || '';
+  noteArea._savedValue = noteArea.value;
+
+  function updateSaveBtn() {
+    const dirty = noteArea.value !== noteArea._savedValue;
+    saveBtn.style.background = dirty ? 'var(--purple)' : 'var(--green)';
+    saveBtn.textContent = dirty ? 'Save Note' : 'Saved ✓';
+    saveBtn.style.opacity = dirty ? '1' : '0.7';
+    saveBtn.style.cursor = dirty ? 'pointer' : 'default';
+  }
+  updateSaveBtn();
+  noteArea.oninput = updateSaveBtn;
+
+  function showEdit() {
+    noteArea.style.display = '';
+    mdPreview.style.display = 'none';
+    editBtn.classList.add('active');
+    previewBtn.classList.remove('active');
+  }
+
+  function showPreview() {
+    mdPreview.innerHTML = renderMarkdown(noteArea.value);
+    noteArea.style.display = 'none';
+    mdPreview.style.display = 'block';
+    previewBtn.classList.add('active');
+    editBtn.classList.remove('active');
+  }
+  // Start in edit mode
+  showEdit();
+  editBtn.onclick = showEdit;
+  previewBtn.onclick = showPreview;
+  // Click preview to go back to edit
+  mdPreview.onclick = showEdit;
+  // Auto-save on blur but stay in edit mode
+  noteArea.onblur = () => saveBlockFocusNote();
+  saveBtn.onclick = () => saveBlockFocusNote(true);
+
+  // Todos
+  renderBlockFocusTodos();
+  const inp = document.getElementById('block-focus-new-todo');
+  inp.value = '';
+  document.getElementById('block-focus-add-todo-btn').onclick = () => addBlockFocusTodo();
+  inp.onkeydown = e => {
+    if (e.key === 'Enter') addBlockFocusTodo();
+  };
+}
+
+function saveBlockFocusNote(flash) {
+  const blockIdx = ui.focusBlock;
+  if (blockIdx === null || blockIdx === undefined) return;
+  const ds = todayStr();
+  const day = getDay(ds);
+  if (!day.blockNotes[blockIdx]) day.blockNotes[blockIdx] = {
+    note: '',
+    todos: []
+  };
+  const noteArea = document.getElementById('block-focus-note-area');
+  day.blockNotes[blockIdx].note = noteArea.value;
+  setDay(ds, day);
+  save();
+  // Mark as saved
+  if (noteArea) noteArea._savedValue = noteArea.value;
+  const saveBtn = document.getElementById('block-focus-save-note');
+  const saveStatus = document.getElementById('focus-save-status');
+  if (saveBtn) {
+    saveBtn.style.background = 'var(--green)';
+    saveBtn.textContent = 'Saved ✓';
+    saveBtn.style.opacity = '0.7';
+    saveBtn.style.cursor = 'default';
+  }
+  if (flash && saveStatus) {
+    saveStatus.textContent = '✓ saved';
+    saveStatus.style.opacity = '1';
+    setTimeout(() => {
+      saveStatus.style.opacity = '0';
+    }, 1800);
+  }
+}
+
+function renderBlockFocusTodos() {
+  const blockIdx = ui.focusBlock;
+  if (blockIdx === null || blockIdx === undefined) return;
+  const ds = todayStr();
+  const day = getDay(ds);
+  const bn = (day.blockNotes || {})[blockIdx] || {
+    note: '',
+    todos: []
+  };
+  const list = document.getElementById('block-focus-todo-list');
+  list.innerHTML = '';
+  if (!(bn.todos || []).length) {
+    list.innerHTML = '<div class="block-focus-todo-empty">No to-dos yet.</div>';
+    return;
+  }
+  bn.todos.forEach(t => {
+    const row = document.createElement('div');
+    row.className = 'block-focus-todo-item';
+    row.innerHTML = `<input type="checkbox" class="block-focus-todo-cb"${t.done?' checked':''}><span class="block-focus-todo-text${t.done?' done':''}">${escAttr(t.text)}</span>`;
+    row.querySelector('.block-focus-todo-cb').onchange = e => {
+      const dayD = getDay(ds);
+      const b = dayD.blockNotes[blockIdx];
+      if (b) {
+        const todo = b.todos.find(x => x.id === t.id);
+        if (todo) {
+          todo.done = e.target.checked;
+          setDay(ds, dayD);
+          save();
+          renderBlockFocusTodos();
+          renderTodayTodos();
+        }
+      }
+    };
+    list.appendChild(row);
+  });
+}
+
+function addBlockFocusTodo() {
+  const blockIdx = ui.focusBlock;
+  if (blockIdx === null || blockIdx === undefined) return;
+  const inp = document.getElementById('block-focus-new-todo');
+  const text = inp.value.trim();
+  if (!text) return;
+  const ds = todayStr();
+  const day = getDay(ds);
+  if (!day.blockNotes[blockIdx]) day.blockNotes[blockIdx] = {
+    note: '',
+    todos: []
+  };
+  day.blockNotes[blockIdx].todos.push({
+    id: 't' + Date.now(),
+    text,
+    done: false
+  });
+  setDay(ds, day);
+  save();
+  inp.value = '';
+  renderBlockFocusTodos();
+  renderTodayTodos();
+}
+
+function renderTodayTab() {
+  renderTimerCard();
+  renderGamePanel();
+  renderDayflowMini();
+  renderTimeline();
+  renderTodayTodos();
+  renderTodayNotes();
+}
+
+function renderTodayNotes() {
+  const sec = document.getElementById('today-notes-section');
+  const list = document.getElementById('today-notes-list');
+  if (!list) return;
+  list.innerHTML = '';
+  const ds = todayStr();
+  const day = getDay(ds);
+  const sched = day.schedule || {};
+  const blockNotes = day.blockNotes || {};
+
+  // Collect blocks that have a note (not just todos)
+  const entries = [];
+  Object.entries(blockNotes).forEach(([idxStr, bn]) => {
+    const note = (bn.note || '').trim();
+    if (!note) return;
+    const idx = +idxStr;
+    const projId = sched[idx];
+    if (!projId) return;
+    const proj = getProject(projId);
+    if (!proj) return;
+    const [h, half] = blockToTime(idx);
+    entries.push({
+      idx,
+      proj,
+      note,
+      timeLabel: formatTime(h, half)
+    });
+  });
+
+  entries.sort((a, b) => a.idx - b.idx);
+
+  if (!entries.length) {
+    sec.style.display = 'none';
+    return;
+  }
+  sec.style.display = '';
+
+  entries.forEach(e => {
+    const card = document.createElement('div');
+    card.className = 'today-note-card';
+    card.innerHTML = `<div class="today-note-header">
+      <div class="today-note-dot" style="background:${e.proj.color}"></div>
+      <div class="today-note-proj" style="color:${e.proj.color}">${e.proj.emoji} ${e.proj.name}</div>
+      <div class="today-note-time">${e.timeLabel}</div>
+    </div>
+    <div class="today-note-body">${e.note.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div>`;
+    card.onclick = () => openNotesModal(e.idx);
+    list.appendChild(card);
+  });
+}
+
+function renderDayflowMini() {
+  const mini = document.getElementById('dayflow-mini');
+  mini.innerHTML = '';
+  const day = currentDayData(),
+    sched = day.schedule || {},
+    done = new Set(day.completed || []);
+  const blockSpan = day.blockSpan || {};
+  const spannedSlots = new Set();
+  Object.entries(blockSpan).forEach(([startIdx, span]) => {
+    for (let i = 1; i < span; i++) spannedSlots.add(+startIdx + i);
+  });
+  const entries = Object.entries(sched).map(([i, pid]) => ({
+    idx: +i,
+    proj: getProject(pid)
+  })).filter(e => e.proj && !spannedSlots.has(e.idx)).sort((a, b) => a.idx - b.idx);
+  entries.forEach(({
+    idx,
+    proj
+  }) => {
+    const isCompleted = done.has(idx),
+      isActive = ui.activeBlock === idx;
+    const [h, half] = blockToTime(idx);
+    const item = document.createElement('div');
+    item.className = 'dayflow-mini-item' + (isActive ? ' active-item' : '');
+    item.innerHTML = `<div class="dayflow-mini-dot" style="background:${isCompleted?'var(--faint)':proj.color};opacity:${isCompleted?.4:1}"></div>
+      <div class="dayflow-mini-time">${formatTime(h,half)}</div>
+      <div class="dayflow-mini-name" style="color:${isCompleted?'var(--faint)':proj.color}">${proj.emoji} ${proj.name}</div>
+      <div class="dayflow-mini-status">${isCompleted?'✓':isActive?'<span class="pulse" style="color:var(--gold)">●</span>':''}</div>`;
+    item.onclick = () => {
+      const tl = document.getElementById(`tl-block-${idx}`);
+      if (tl) tl.scrollIntoView({
+        behavior: 'smooth',
+        block: 'center'
+      });
+    };
+    mini.appendChild(item);
+  });
+}
+
+function renderTimeline() {
+  // Return-to-focus banner: show when active block exists but focus view is hidden
+  const returnBanner = document.getElementById('return-to-focus-banner');
+  const returnBtn = document.getElementById('return-to-focus-btn');
+  if (returnBanner) {
+    const focusActive = document.getElementById('block-focus-view')?.classList.contains('active');
+    returnBanner.style.display = (ui.activeBlock !== null && !focusActive) ? 'block' : 'none';
+    if (returnBtn) returnBtn.onclick = () => showBlockFocus(ui.activeBlock);
+  }
+  const list = document.getElementById('timeline-list');
+  list.innerHTML = '';
+  const day = currentDayData(),
+    sched = day.schedule || {},
+    done = new Set(day.completed || []);
+  const blockSpan = day.blockSpan || {};
+  // Build set of slots that are part of a span (not the start)
+  const spannedSlots = new Set();
+  Object.entries(blockSpan).forEach(([startIdx, span]) => {
+    for (let i = 1; i < span; i++) spannedSlots.add(+startIdx + i);
+  });
+  // Only include blocks that are not part of a span (i.e., either single or span start)
+  const entries = Object.entries(sched).map(([i, pid]) => ({
+    idx: +i,
+    proj: getProject(pid)
+  })).filter(e => e.proj && !spannedSlots.has(e.idx)).sort((a, b) => a.idx - b.idx);
+  // Calculate total blocks and hours (1-hour blocks count as 2 blocks)
+  let totalBlocks = 0,
+    totalHours = 0;
+  entries.forEach(({
+    idx
+  }) => {
+    const span = blockSpan[idx] || 1;
+    totalBlocks += span;
+    totalHours += span * 0.5;
+  });
+  document.getElementById('today-timeline-label').textContent = `TODAY'S FLOW — ${totalBlocks} BLOCK${totalBlocks!==1?'S':''} · ${totalHours.toFixed(1)}H PLANNED`;
+  if (!entries.length) {
+    list.innerHTML = `<div style="font-family:'DM Mono',monospace;font-size:12px;color:var(--faint);margin-top:60px;text-align:center;line-height:2">No blocks planned yet.<br>Go to Plan tab or drag a project to start.</div>`;
+    return;
+  }
+  const hf = currentHourFrac();
+  let nowInserted = false;
+  entries.forEach(({
+    idx,
+    proj
+  }, i) => {
+    const isCompleted = done.has(idx),
+      isActive = ui.activeBlock === idx;
+    const [h, half] = blockToTime(idx), bhf = h + half * .5;
+    const hasNotes = blockHasContent(idx),
+      notes = (day.blockNotes || {})[idx];
+    if (isToday() && !nowInserted && bhf > hf) {
+      nowInserted = true;
+      const nowEl = document.createElement('div');
+      nowEl.className = 'tl-now-marker';
+      const now = new Date(),
+        hr = now.getHours() % 12 || 12,
+        mn = String(now.getMinutes()).padStart(2, '0'),
+        ap = now.getHours() < 12 ? 'AM' : 'PM';
+      nowEl.innerHTML = `<div class="tl-now-dot"></div><div class="tl-now-line"></div><div class="tl-now-label">NOW · ${hr}:${mn} ${ap}</div>`;
+      list.appendChild(nowEl);
+    }
+    const prevEntry = entries[i - 1],
+      prevH = prevEntry ? blockToTime(prevEntry.idx)[0] : null;
+    if (!prevEntry || h !== prevH) {
+      const hm = document.createElement('div');
+      hm.className = 'tl-hour-marker';
+      hm.innerHTML = `<div class="tl-hour-text">${formatTime(h,false)}</div><div class="tl-hour-line"></div>`;
+      list.appendChild(hm);
+    }
+    const block = document.createElement('div');
+    block.className = 'tl-block' + (isActive ? ' tl-active' : '') + (isCompleted ? ' tl-done' : '');
+    block.id = `tl-block-${idx}`;
+    const span = blockSpan[idx] || 1;
+    const durationBadge = span >= 2 ? `<span class="block-1h-badge">1h</span>` : `<span class="block-1h-badge" style="opacity:.45">30m</span>`;
+    let notePreview = '',
+      todoPreview = '';
+    if (notes) {
+      if ((notes.note || '').trim()) notePreview = notes.note.trim().replace(/\n/g, ' ').slice(0, 80);
+      if ((notes.todos || []).length) {
+        const tot = notes.todos.length,
+          dt = notes.todos.filter(t => t.done).length;
+        todoPreview = `${dt}/${tot} todos done`;
+      }
+    }
+    block.innerHTML = `<div class="tl-accent" style="background:${proj.color};opacity:${isCompleted?.3:1}"></div>
+      <div class="tl-inner">
+        <div class="tl-time">${formatTime(h,half)}</div>
+        <div class="tl-info">
+          <div class="tl-proj-name" style="color:${isCompleted?'var(--faint)':proj.color}">${proj.emoji} ${proj.name} ${durationBadge}</div>
+          ${notePreview?`<div class="tl-note-preview">${notePreview}</div>`:''}
+          ${todoPreview?`<div class="tl-todo-preview">📋 ${todoPreview}</div>`:''}
+        </div>
+        <div class="tl-actions">
+          <button class="tl-notes-btn${hasNotes?' has':''}" data-nb="${idx}">📝 ${hasNotes?'notes':'add'}</button>
+          ${isCompleted
+            ? `<button class="tl-undo-btn" data-undo="${idx}">✗ undo</button>`
+            : isActive
+              ? `<span class="tl-status pulse" style="color:var(--gold)">● active</span>`
+              : `${isToday()&&ui.currentDate===todayStr()?`<button class="tl-start-btn" data-start="${idx}">▶ start</button>`:''}<button class="tl-done-btn" data-done="${idx}">✓ done</button>`
+          }
+        </div>
+      </div>`;
+    list.appendChild(block);
+    block.querySelector('[data-nb]')?.addEventListener('click', e => {
+      e.stopPropagation();
+      openNotesModal(idx);
+    });
+    block.querySelector('[data-start]')?.addEventListener('click', e => {
+      e.stopPropagation();
+      startTimer(idx);
+    });
+    block.querySelector('[data-done]')?.addEventListener('click', e => {
+      e.stopPropagation();
+      completeBlock(idx);
+      renderTodayTab();
+      renderScheduleGrid();
+      renderHeaderStats();
+      renderSidebar();
+    });
+    block.querySelector('[data-undo]')?.addEventListener('click', e => {
+      e.stopPropagation();
+      const day = currentDayData();
+      const span = (day.blockSpan || {})[idx] || 1;
+      for (let i = 0; i < span; i++) {
+        day.completed = day.completed.filter(j => j !== idx + i);
+      }
+      setDay(ui.currentDate, day);
+      save();
+      renderTodayTab();
+      renderScheduleGrid();
+      renderHeaderStats();
+      renderSidebar();
+    });
+  });
+  if (isToday() && !nowInserted && entries.length) {
+    const nowEl = document.createElement('div');
+    nowEl.className = 'tl-now-marker';
+    const now = new Date(),
+      hr = now.getHours() % 12 || 12,
+      mn = String(now.getMinutes()).padStart(2, '0'),
+      ap = now.getHours() < 12 ? 'AM' : 'PM';
+    nowEl.innerHTML = `<div class="tl-now-dot"></div><div class="tl-now-line"></div><div class="tl-now-label">NOW · ${hr}:${mn} ${ap}</div>`;
+    list.appendChild(nowEl);
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+//  RENDER: STATS TAB
+// ════════════════════════════════════════════════════════════
+function drawBarChart(canvasId, data, color, logicalH) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  const dpr = window.devicePixelRatio || 1;
+  const W = canvas.parentElement.clientWidth - 28;
+  const H = logicalH || 90;
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, W, H);
+  if (!data.length) return;
+  const maxVal = Math.max(1, ...data.map(d => d.value));
+  const barW = Math.max(2, Math.floor((W - data.length) / data.length));
+  const gap = Math.max(1, Math.floor(W / data.length) - barW);
+  const padBottom = 14;
+  const chartH = H - padBottom;
+  data.forEach((d, i) => {
+    const x = i * (barW + gap);
+    const barH = maxVal > 0 ? Math.max(d.value > 0 ? 2 : 0, Math.round((d.value / maxVal) * chartH)) : 0;
+    const y = chartH - barH;
+    const grad = ctx.createLinearGradient(0, y, 0, chartH);
+    grad.addColorStop(0, color + 'cc');
+    grad.addColorStop(1, color + '44');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(x, y, barW, barH, 2);
+    else ctx.rect(x, y, barW, barH);
+    ctx.fill();
+    if (i % (Math.ceil(data.length / 6)) === 0) {
+      ctx.fillStyle = '#3a3733';
+      ctx.font = '8px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(d.label, x + barW / 2, H - 2);
+    }
+  });
+}
+
+function drawLineChart(canvasId, data, color, logicalH) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  const dpr = window.devicePixelRatio || 1;
+  const W = canvas.parentElement.clientWidth - 28;
+  const H = logicalH || 70;
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, W, H);
+  if (data.length < 2) return;
+  const maxVal = 100;
+  const padBottom = 14,
+    padTop = 4;
+  const chartH = H - padBottom - padTop;
+  const stepX = W / (data.length - 1);
+  const points = data.map((d, i) => ({
+    x: i * stepX,
+    y: padTop + chartH * (1 - d.value / maxVal)
+  }));
+  const grad = ctx.createLinearGradient(0, padTop, 0, padTop + chartH);
+  grad.addColorStop(0, color + '55');
+  grad.addColorStop(1, color + '05');
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, padTop + chartH);
+  points.forEach(p => ctx.lineTo(p.x, p.y));
+  ctx.lineTo(points[points.length - 1].x, padTop + chartH);
+  ctx.closePath();
+  ctx.fillStyle = grad;
+  ctx.fill();
+  ctx.beginPath();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  points.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+  ctx.stroke();
+  data.forEach((d, i) => {
+    if (i % (Math.ceil(data.length / 6)) === 0) {
+      ctx.fillStyle = '#3a3733';
+      ctx.font = '8px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(d.label, points[i].x, H - 2);
+    }
+  });
+}
+
+function computeTodoStats() {
+  let completed = 0,
+    active = 0,
+    progressLogs = 0,
+    dailyDone = 0;
+  Object.values(state.projectTodos || {}).forEach(todos => {
+    todos.forEach(t => {
+      if (t.done) completed++;
+      else active++;
+      progressLogs += (t.history || []).filter(h => h.type === 'progress').length;
+    });
+  });
+  // daily todos done (from blockNotes)
+  Object.values(state.days || {}).forEach(d => {
+    Object.values(d.blockNotes || {}).forEach(bn => {
+      (bn.todos || []).forEach(t => {
+        if (t.done) dailyDone++;
+      });
+    });
+  });
+  return {
+    completed,
+    active,
+    progressLogs,
+    dailyDone
+  };
+}
+
+function getLast30Days() {
+  const days = [];
+  for (let i = 29; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    const ds = d.toISOString().slice(0, 10);
+    const label = d.toLocaleDateString('en-US', {
+      month: 'numeric',
+      day: 'numeric'
+    });
+    days.push({
+      ds,
+      label
+    });
+  }
+  return days;
+}
+
+function computeMomentumAtDay(ds) {
+  // Recompute momentum up to (and including) ds
+  const allDays = Object.keys(state.days).filter(d => !isWeekend(d) && !state.days[d]?.timeOff && d <= ds).sort();
+  let m = 100;
+  for (const d of allDays) {
+    const done = (state.days[d].completed || []).length;
+    if (done >= dailyGoal()) m = Math.min(100, m + 5);
+    else m = Math.max(0, m - 10);
+  }
+  return Math.round(m);
+}
+
+function renderStats() {
+  const s = computeStats();
+  document.getElementById('sc-total-blocks').textContent = s.total;
+  document.getElementById('sc-total-hours').textContent = (s.total * .5).toFixed(1);
+  document.getElementById('sc-avg').textContent = s.avg;
+  document.getElementById('sc-streak').textContent = s.streak;
+  document.getElementById('sc-best').textContent = s.best;
+  document.getElementById('sc-days').textContent = s.days;
+
+  // Todo stats
+  const ts = computeTodoStats();
+  document.getElementById('sc-todos-total').textContent = ts.completed;
+  document.getElementById('sc-todos-active').textContent = ts.active;
+  document.getElementById('sc-todos-progress').textContent = ts.progressLogs;
+  document.getElementById('sc-daily-todos').textContent = ts.dailyDone;
+
+  // Charts — last 30 days
+  const last30 = getLast30Days();
+  const blocksData = last30.map(({
+    ds,
+    label
+  }) => ({
+    label,
+    value: (state.days[ds]?.completed || []).length
+  }));
+
+  // Todos completed per day
+  const todosByDay = {};
+  Object.values(state.projectTodos || {}).forEach(todos => {
+    todos.forEach(t => {
+      (t.history || []).filter(h => h.type === 'done').forEach(h => {
+        todosByDay[h.date] = (todosByDay[h.date] || 0) + 1;
+      });
+    });
+  });
+  Object.entries(state.days || {}).forEach(([ds, d]) => {
+    Object.values(d.blockNotes || {}).forEach(bn => {
+      const doneTodos = (bn.todos || []).filter(t => t.done).length;
+      if (doneTodos) todosByDay[ds] = (todosByDay[ds] || 0) + doneTodos;
+    });
+  });
+  const todosData = last30.map(({
+    ds,
+    label
+  }) => ({
+    label,
+    value: todosByDay[ds] || 0
+  }));
+
+  // Momentum data: find first day with any data, set all prior days to 0
+  const firstDataDay = last30.find(({
+      ds
+    }) =>
+    (state.days[ds]?.schedule && Object.keys(state.days[ds].schedule).length > 0) ||
+    state.days[ds]?.timeOff === true ||
+    Object.keys(state.days[ds]?.blockNotes || {}).length > 0
+  );
+  const momentumData = last30.map(({
+    ds,
+    label
+  }) => {
+    if (firstDataDay && ds < firstDataDay.ds) {
+      return {
+        label,
+        value: 0
+      }; // Before any data, momentum is 0
+    }
+    return {
+      label,
+      value: computeMomentumAtDay(ds)
+    };
+  });
+
+  // Draw with explicit logical heights to prevent growing bug
+  requestAnimationFrame(() => {
+    drawBarChart('chart-blocks', blocksData, '#E8C97A', 90);
+    drawBarChart('chart-todos', todosData, '#7CB87C', 90);
+    drawLineChart('chart-momentum', momentumData, '#9B8FCF', 70);
+  });
+}
+
+// ════════════════════════════════════════════════════════════
+//  RENDER: NOTES TAB
+// ════════════════════════════════════════════════════════════
+function renderNotesTab() {
+  const projList = document.getElementById('notes-tab-proj-list');
+  const logEl = document.getElementById('notes-tab-log');
+  if (!projList || !logEl) return;
+
+  // Build a map: projId -> [{date, blockIdx, timeLabel, note, todos, importance}]
+  const projEntries = {};
+  Object.entries(state.days).forEach(([ds, dayData]) => {
+    const sched = dayData.schedule || {};
+    const blockNotes = dayData.blockNotes || {};
+    Object.entries(blockNotes).forEach(([idxStr, bn]) => {
+      const idx = +idxStr;
+      const note = (bn.note || '').trim();
+      const todos = (bn.todos || []);
+      if (!note && !todos.length) return;
+      const projId = sched[idx];
+      if (!projId) return;
+      if (!projEntries[projId]) projEntries[projId] = [];
+      const [h, half] = blockToTime(idx);
+      projEntries[projId].push({
+        date: ds,
+        blockIdx: idx,
+        timeLabel: formatTime(h, half),
+        note,
+        todos,
+        importance: bn.importance || null
+      });
+    });
+  });
+
+  // Collect projects that have notes, sort by note count desc
+  const projs = state.projects.filter(p => projEntries[p.id] && projEntries[p.id].length);
+
+  // Determine selected project
+  if (!ui.notesTabProjId || !projEntries[ui.notesTabProjId]) {
+    ui.notesTabProjId = projs.length ? projs[0].id : null;
+  }
+
+  // Render project list
+  projList.innerHTML = '<div class="section-label" style="margin-bottom:10px">Projects</div>';
+  if (!projs.length) {
+    projList.innerHTML += '<div style="font-family:\'DM Mono\',monospace;font-size:10px;color:var(--faint);padding:6px 4px">No notes yet.<br>Add notes to blocks in the Plan tab.</div>';
+  }
+  projs.forEach(p => {
+    const count = projEntries[p.id].length;
+    const btn = document.createElement('button');
+    btn.className = 'notes-tab-proj-btn' + (p.id === ui.notesTabProjId ? ' active' : '');
+    btn.innerHTML = `<div class="notes-tab-proj-dot" style="background:${p.color}"></div>
+      <span class="notes-tab-proj-name">${p.emoji} ${p.name}</span>
+      <span class="notes-tab-proj-count">${count}</span>`;
+    btn.onclick = () => {
+      ui.notesTabProjId = p.id;
+      renderNotesTab();
+    };
+    projList.appendChild(btn);
+  });
+
+  // Render filter bar
+  const filterBar = document.getElementById('notes-tab-filter-bar');
+  if (filterBar) {
+    filterBar.innerHTML = '';
+    const filterLabels = ['All', '★', '★★', '★★★', '★★★★', '★★★★★'];
+    filterLabels.forEach((lbl, i) => {
+      const btn = document.createElement('button');
+      btn.className = 'imp-filter-btn' + (ui.notesTabImportanceFilter === i ? ' active' : '');
+      btn.textContent = lbl;
+      btn.onclick = () => {
+        ui.notesTabImportanceFilter = i;
+        renderNotesTab();
+      };
+      filterBar.appendChild(btn);
+    });
+  }
+
+  // Render log for selected project
+  logEl.innerHTML = '';
+  if (!ui.notesTabProjId) {
+    logEl.innerHTML = '<div class="notes-log-empty">No notes found.<br>Write notes on blocks in the Plan tab.</div>';
+    return;
+  }
+  const proj = getProject(ui.notesTabProjId);
+  const allEntries = (projEntries[ui.notesTabProjId] || []).slice().sort((a, b) => b.date.localeCompare(a.date) || b.blockIdx - a.blockIdx);
+  const entries = ui.notesTabImportanceFilter === 0 ?
+    allEntries :
+    allEntries.filter(e => (e.importance || 0) === ui.notesTabImportanceFilter);
+
+  if (!entries.length) {
+    const msg = ui.notesTabImportanceFilter > 0 ?
+      `<div class="notes-log-empty">No ${'★'.repeat(ui.notesTabImportanceFilter)} notes for this project.</div>` :
+      '<div class="notes-log-empty">No notes for this project yet.</div>';
+    logEl.innerHTML = msg;
+    return;
+  }
+
+  // Group by date
+  const byDate = {};
+  entries.forEach(e => {
+    if (!byDate[e.date]) byDate[e.date] = [];
+    byDate[e.date].push(e);
+  });
+
+  Object.entries(byDate).sort((a, b) => b[0].localeCompare(a[0])).forEach(([ds, dayEntries]) => {
+    const group = document.createElement('div');
+    group.className = 'notes-log-date-group';
+    const dateLabel = formatDateLabel(ds);
+    group.innerHTML = `<div class="notes-log-date-header"><span>${dateLabel}</span><div class="notes-log-date-line"></div></div>`;
+
+    dayEntries.forEach(e => {
+      const card = document.createElement('div');
+      card.className = 'notes-log-entry';
+      let html = `<div class="notes-log-entry-header">
+        <div class="notes-log-entry-time">${e.timeLabel}</div>
+        <div class="notes-log-entry-proj">
+          <div class="notes-log-entry-proj-dot" style="background:${proj.color}"></div>
+          <span style="color:${proj.color}">${proj.emoji} ${proj.name}</span>
+        </div>
+        ${e.importance?`<div class="notes-log-imp-stars" title="Importance: ${e.importance}/5">${'★'.repeat(e.importance)}${'☆'.repeat(5-e.importance)}</div>`:''}
+      </div>`;
+      if (e.note) {
+        html += `<div class="notes-log-note-text" style="border-radius:6px;padding:4px 6px;cursor:pointer;word-break:break-word;line-height:1.6;color:var(--muted)">${renderMarkdown(e.note)}</div>`;
+      } else {
+        html += `<div class="notes-log-note-text" style="border-radius:6px;padding:4px 6px;cursor:pointer;color:var(--faint);font-style:italic">Click to add note…</div>`;
+      }
+      if (e.todos.length) {
+        html += `<div class="notes-log-todos"><div class="notes-log-todos-label">TO-DOS</div>`;
+        e.todos.forEach(t => {
+          html += `<div class="notes-log-todo-item${t.done?' done':''}">
+            <div class="notes-log-todo-dot${t.done?' done':''}"></div>
+            <span>${(t.text||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</span>
+          </div>`;
+        });
+        html += `</div>`;
+      }
+      card.innerHTML = html;
+      // Make the entire card clickable to open modal
+      card.style.cursor = 'pointer';
+      card.onclick = () => openNotesModal(e.blockIdx, e.date);
+      group.appendChild(card);
+    });
+    logEl.appendChild(group);
+  });
+}
+
+// ════════════════════════════════════════════════════════════
+//  EXPORT: NOTES → MARKDOWN
+// ════════════════════════════════════════════════════════════
+function buildNotesEntries(projId) {
+  // Returns [{date, blockIdx, timeLabel, note, todos}] for a given project
+  const entries = [];
+  Object.entries(state.days).forEach(([ds, dayData]) => {
+    const sched = dayData.schedule || {};
+    const blockNotes = dayData.blockNotes || {};
+    Object.entries(blockNotes).forEach(([idxStr, bn]) => {
+      const idx = +idxStr;
+      const note = (bn.note || '').trim();
+      const todos = (bn.todos || []);
+      if (!note && !todos.length) return;
+      if (sched[idx] !== projId) return;
+      const [h, half] = blockToTime(idx);
+      entries.push({
+        date: ds,
+        blockIdx: idx,
+        timeLabel: formatTime(h, half),
+        note,
+        todos
+      });
+    });
+  });
+  return entries;
+}
+
+function exportNotesMarkdown(projId) {
+  const proj = getProject(projId);
+  if (!proj) return;
+  const entries = buildNotesEntries(projId).sort((a, b) => b.date.localeCompare(a.date) || b.blockIdx - a.blockIdx);
+  if (!entries.length) {
+    alert('No notes found for this project.');
+    return;
+  }
+
+  const lines = [];
+  lines.push(`# ${proj.emoji} ${proj.name} — Notes Log`);
+  lines.push(`*Exported ${new Date().toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'})}*`);
+  lines.push('');
+
+  // Group by year → month → day
+  const byYear = {};
+  entries.forEach(e => {
+    const [y, m, d] = e.date.split('-');
+    if (!byYear[y]) byYear[y] = {};
+    if (!byYear[y][m]) byYear[y][m] = [];
+    byYear[y][m].push({
+      ...e,
+      day: d
+    });
+  });
+
+  Object.keys(byYear).sort((a, b) => b - a).forEach(year => {
+    lines.push(`# ${year}`);
+    lines.push('');
+    const months = byYear[year];
+    Object.keys(months).sort((a, b) => b - a).forEach(month => {
+      const monthName = new Date(`${year}-${month}-15`).toLocaleDateString('en-US', {
+        month: 'long'
+      });
+      lines.push(`## ${monthName}`);
+      lines.push('');
+
+      // Group days within month
+      const byDay = {};
+      months[month].forEach(e => {
+        if (!byDay[e.day]) byDay[e.day] = [];
+        byDay[e.day].push(e);
+      });
+      Object.keys(byDay).sort((a, b) => b - a).forEach(day => {
+        const dateObj = new Date(`${year}-${month}-${day}T12:00:00`);
+        const dayLabel = dateObj.toLocaleDateString('en-US', {
+          month: 'long',
+          day: 'numeric'
+        });
+        lines.push(`### ${dayLabel}`);
+        lines.push('');
+        byDay[day].forEach(e => {
+          lines.push(`**${e.timeLabel}**`);
+          if (e.note) {
+            lines.push('');
+            lines.push(e.note);
+          }
+          if (e.todos && e.todos.length) {
+            lines.push('');
+            e.todos.forEach(t => {
+              lines.push(`- [${t.done?'x':' '}] ${t.text||''}`);
+            });
+          }
+          lines.push('');
+        });
+      });
+    });
+  });
+
+  const blob = new Blob([lines.join('\n')], {
+    type: 'text/markdown'
+  });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  const safeName = proj.name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+  a.download = `notes-${safeName}.md`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function switchTab(tab) {
+  ui.tab = tab;
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === tab + '-panel'));
+  // Show date nav only on Plan tab
+  const navRow = document.getElementById('nav-row');
+  if (navRow) navRow.style.visibility = tab === 'plan' ? 'visible' : 'hidden';
+  // Show export MD button only on Notes tab
+  const mdBtn = document.getElementById('export-notes-md-btn');
+  if (mdBtn) mdBtn.style.display = tab === 'notes' ? '' : 'none';
+  if (tab === 'stats') renderStats();
+  if (tab === 'today') {
+    ui.currentDate = todayStr();
+    renderTodayTab();
+  }
+  if (tab === 'todos') renderTodosTab();
+  if (tab === 'notes') renderNotesTab();
+  if (tab === 'plan') {
+    renderScheduleGrid();
+    renderSidebar();
+    renderHeaderStats();
+    setTimeout(updateTimeneedle, 50);
+  }
+}
+
+function renderAll() {
+  renderDateNav();
+  renderHeaderStats();
+  renderSidebar();
+  renderScheduleGrid();
+  // Show nav only on Plan tab
+  const navRow = document.getElementById('nav-row');
+  if (navRow) navRow.style.visibility = ui.tab === 'plan' ? 'visible' : 'hidden';
+  if (ui.tab === 'today') renderTodayTab();
+  else renderTimerCard();
+  if (ui.tab === 'stats') renderStats();
+  if (ui.tab === 'todos') renderTodosTab();
+  if (ui.tab === 'notes') renderNotesTab();
+}
+
+function startClockTick() {
+  clearInterval(ui.clockInterval);
+  ui.clockInterval = setInterval(() => {
+    // Detect day rollover — if ui.currentDate was "today" and the date has changed, update it
+    const realToday = todayStr();
+    if (ui._lastKnownDate && ui._lastKnownDate !== realToday) {
+      // Day changed — ensure new day exists, snap currentDate if it was the old today
+      ensureForwardDays();
+      save();
+      if (ui.currentDate === ui._lastKnownDate) ui.currentDate = realToday;
+      renderAll();
+    }
+    ui._lastKnownDate = realToday;
+    if (ui.tab === 'plan') updateTimeneedle();
+    if (ui.tab === 'today' && isToday()) renderTimeline();
+  }, 30000);
+  // Seed the last known date immediately
+  ui._lastKnownDate = todayStr();
+}
+
+// ════════════════════════════════════════════════════════════
+//  INIT
+// ════════════════════════════════════════════════════════════
+document.addEventListener('DOMContentLoaded', () => {
+  // Try loading from server file first (most up-to-date), fall back to localStorage
+  (async () => {
+    load(); // seed from localStorage immediately so UI isn't blank
+    const fromServer = await loadFromServer();
+    if (fromServer) {
+      // Merge server state into localStorage too
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
+      } catch (e) {}
+    }
+    ensureForwardDays();
+    restoreTimerState(); // restore timer before rendering so activeBlock/focusBlock are set
+    renderAll();
+    startClockTick();
+    // If timer was restored and focus block is set, switch to Today and show focus view
+    if (ui.timerRunning && ui.focusBlock !== null) {
+      switchTab('today');
+      showBlockFocus(ui.focusBlock);
+    }
+  })();
+
+  document.querySelectorAll('.tab-btn').forEach(btn => btn.addEventListener('click', () => switchTab(btn.dataset.tab)));
+
+  document.getElementById('nav-prev').addEventListener('click', () => {
+    const days = [todayStr(), ...sortedDays()].filter((v, i, a) => a.indexOf(v) === i).sort().reverse();
+    const idx = days.indexOf(ui.currentDate);
+    if (idx < days.length - 1) {
+      ui.currentDate = days[idx + 1];
+      renderAll();
+    } else {
+      // On the oldest day — generate one more day backward
+      const oldest = new Date(ui.currentDate + 'T00:00:00');
+      oldest.setDate(oldest.getDate() - 1);
+      const ds = oldest.toISOString().slice(0, 10);
+      if (!state.days[ds]) state.days[ds] = {
+        schedule: {},
+        completed: [],
+        blockNotes: {},
+        timeOff: isWeekend(ds)
+      };
+      save();
+      ui.currentDate = ds;
+      renderAll();
+    }
+  });
+  document.getElementById('nav-next').addEventListener('click', () => {
+    const days = [todayStr(), ...sortedDays()].filter((v, i, a) => a.indexOf(v) === i).sort().reverse();
+    const idx = days.indexOf(ui.currentDate);
+    if (idx > 0) {
+      ui.currentDate = days[idx - 1];
+      renderAll();
+    }
+  });
+  document.getElementById('nav-today-btn').addEventListener('click', () => {
+    ui.currentDate = todayStr();
+    renderAll();
+  });
+
+  // Goal input
+  document.getElementById('goal-input').addEventListener('change', e => {
+    const v = Math.max(1, Math.min(36, +e.target.value || 8));
+    state.settings.dailyGoal = v;
+    e.target.value = v;
+    save();
+    renderHeaderStats();
+    if (ui.tab === 'today') renderGamePanel();
+  });
+
+  // Time-off toggle
+  document.getElementById('timeoff-btn').addEventListener('click', toggleTimeOff);
+
+  // Add project
+  document.getElementById('add-proj-toggle').addEventListener('click', () => document.getElementById('add-proj-form').classList.toggle('visible'));
+  document.getElementById('cancel-add-proj').addEventListener('click', () => document.getElementById('add-proj-form').classList.remove('visible'));
+  document.getElementById('confirm-add-proj').addEventListener('click', () => {
+    const name = document.getElementById('new-name').value.trim();
+    if (!name) return;
+    state.projects.push({
+      id: name.toLowerCase().replace(/\s+/g, '-') + '-' + Date.now(),
+      name,
+      emoji: document.getElementById('new-emoji').value || '⚡',
+      color: document.getElementById('new-color').value
+    });
+    save();
+    document.getElementById('new-name').value = '';
+    document.getElementById('add-proj-form').classList.remove('visible');
+    renderAll();
+  });
+  document.getElementById('new-name').addEventListener('keydown', e => {
+    if (e.key === 'Enter') document.getElementById('confirm-add-proj').click();
+  });
+
+  // Notes modal
+  document.getElementById('notes-close').onclick = closeNotesModal;
+  document.getElementById('block-focus-back').addEventListener('click', () => {
+    hideBlockFocus();
+    renderTodayTab();
+  });
+  document.getElementById('notes-cancel-btn').onclick = closeNotesModal;
+  document.getElementById('notes-save-btn').onclick = saveNotesModal;
+  document.getElementById('notes-overlay').addEventListener('click', e => {
+    if (e.target === document.getElementById('notes-overlay')) closeNotesModal();
+  });
+  document.getElementById('add-todo-btn').addEventListener('click', addTodoItem);
+  document.getElementById('new-todo-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter') addTodoItem();
+  });
+
+  // Export/Import
+  document.getElementById('export-btn').addEventListener('click', exportYaml);
+  document.getElementById('export-notes-md-btn').addEventListener('click', () => {
+    if (ui.notesTabProjId) exportNotesMarkdown(ui.notesTabProjId);
+  });
+  document.getElementById('import-btn').addEventListener('click', () => document.getElementById('import-input').click());
+  document.getElementById('import-input').addEventListener('change', e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => importYaml(ev.target.result);
+    reader.readAsText(file);
+    e.target.value = '';
+  });
+
+  // Close dropdown on outside click; also cancel project drag
+  document.addEventListener('click', () => closeDropdown());
+  document.addEventListener('dragend', () => {
+    ui.dragProjId = null;
+    ui.dragSrcIdx = null;
+    document.querySelectorAll('.proj-drop-target,.drag-over').forEach(r => r.classList.remove('proj-drop-target', 'drag-over'));
+  });
+
+  // Tab visibility
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+      // Check if the date changed while tab was hidden (e.g. left open overnight)
+      const realToday = todayStr();
+      if (ui._lastKnownDate && ui._lastKnownDate !== realToday) {
+        ensureForwardDays();
+        save();
+        if (ui.currentDate === ui._lastKnownDate) ui.currentDate = realToday;
+        ui._lastKnownDate = realToday;
+        renderAll();
+      } else {
+        renderTimerCard();
+        if (ui.tab === 'plan') updateTimeneedle();
+      }
+    }
+  });
+  document.getElementById('plan-panel').addEventListener('scroll', updateTimeneedle);
+
+  // Redraw charts on resize
+  window.addEventListener('resize', () => {
+    if (ui.tab === 'stats') renderStats();
+  });
+
+  // beforeunload — do a final save to server
+  window.addEventListener('beforeunload', () => {
+    try {
+      const yaml = toYaml();
+      navigator.sendBeacon('/save', new Blob([yaml], {
+        type: 'text/yaml'
+      }));
+    } catch (_) {}
+  });
+});

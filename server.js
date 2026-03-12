@@ -60,15 +60,19 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ── GET / or /day-planner.html  — serve the app ──────────
-  if (req.method === 'GET' && (req.url === '/' || req.url === '/day-planner.html')) {
+  // ── GET static files (html, css, js) ─────────────────────
+  if (req.method === 'GET') {
+    const urlPath = req.url === '/' ? '/day-planner.html' : req.url;
+    const filePath = path.join(__dirname, path.basename(urlPath));
+    const ext = path.extname(filePath);
+    const mime = MIME[ext] || 'application/octet-stream';
     try {
-      const html = fs.readFileSync(HTML_FILE, 'utf8');
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(html);
+      const data = fs.readFileSync(filePath);
+      res.writeHead(200, { 'Content-Type': mime });
+      res.end(data);
     } catch (err) {
       res.writeHead(404);
-      res.end('day-planner.html not found — make sure server.js is in the same folder.');
+      res.end(`Not found: ${urlPath}`);
     }
     return;
   }

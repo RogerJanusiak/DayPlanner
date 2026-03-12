@@ -24,7 +24,8 @@ fi
 
 # Start server
 echo "🚀 Starting Day Planner server..."
-nohup node "$DIR/server.js" > "$LOG_FILE" 2>&1 &
+nohup node "$DIR/server.js" &
+disown
 SERVER_PID=$!
 echo $SERVER_PID > "$PID_FILE"
 
