@@ -29,8 +29,8 @@
       <button class="tab-btn active" data-tab="plan">Plan</button>
       <button class="tab-btn" data-tab="today">Today</button>
       <button class="tab-btn" data-tab="todos">Todos</button>
-      <button class="tab-btn" data-tab="stats">Stats</button>
       <button class="tab-btn" data-tab="notes">Notes</button>
+      <button class="tab-btn" data-tab="stats">Stats</button>
     </div>
     <div id="nav-row" style="display:flex;align-items:center;gap:6px;padding-bottom:2px">
       <button class="nav-arr" id="nav-prev">&#8592;</button>
@@ -202,6 +202,17 @@
         <div id="block-focus-add-todo-row">
           <input id="block-focus-new-todo" type="text" placeholder="Add a to-do…">
           <button id="block-focus-add-todo-btn">+ Add</button>
+        </div>
+      </div>
+      <div class="block-focus-section" id="block-focus-proj-todos-section" style="display:none">
+        <div class="block-focus-section-label" style="display:flex;align-items:center;justify-content:space-between">
+          <span>Project Todos</span>
+          <span id="block-focus-proj-todos-name" style="color:var(--faint);font-size:9px"></span>
+        </div>
+        <div id="block-focus-proj-todos-list"></div>
+        <div id="block-focus-add-proj-todo-row">
+          <input id="block-focus-new-proj-todo" type="text" placeholder="Add a project todo…">
+          <button id="block-focus-add-proj-todo-btn">+ Add</button>
         </div>
       </div>
     </div>

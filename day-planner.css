@@ -1824,6 +1824,39 @@ html,body {
   color:var(--purple);
 }
 
+#block-focus-add-proj-todo-row {
+  display:flex;
+  gap:7px;
+  margin-top:10px;
+}
+#block-focus-new-proj-todo {
+  flex:1;
+  background:var(--bg3);
+  border:1px solid var(--border2);
+  color:var(--text);
+  font-family:'DM Mono',monospace;
+  font-size:11px;
+  border-radius:6px;
+  padding:7px 10px;
+  outline:none;
+}
+#block-focus-new-proj-todo:focus{border-color:var(--purple)}
+#block-focus-add-proj-todo-btn {
+  background:none;
+  border:1px solid var(--border2);
+  color:var(--muted);
+  padding:7px 12px;
+  border-radius:6px;
+  cursor:pointer;
+  font-family:'DM Mono',monospace;
+  font-size:11px;
+  transition:all .15s;
+}
+#block-focus-add-proj-todo-btn:hover {
+  border-color:var(--purple);
+  color:var(--purple);
+}
+
 /* Block project todos in notes modal */
 .block-proj-todos{margin-top:10px}
 .block-proj-todo-item {

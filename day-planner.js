@@ -2516,6 +2516,9 @@ function renderBlockFocus() {
   inp.onkeydown = e => {
     if (e.key === 'Enter') addBlockFocusTodo();
   };
+
+  // Project todos
+  renderFocusProjTodos();
 }
 
 function saveBlockFocusNote(flash) {
@@ -2609,6 +2612,113 @@ function addBlockFocusTodo() {
   inp.value = '';
   renderBlockFocusTodos();
   renderTodayTodos();
+}
+
+function renderFocusProjTodos() {
+  const blockIdx = ui.focusBlock;
+  if (blockIdx === null || blockIdx === undefined) return;
+  const ds = todayStr();
+  const day = getDay(ds);
+  const projId = (day.schedule || {})[blockIdx];
+  const section = document.getElementById('block-focus-proj-todos-section');
+  if (!projId) {
+    section.style.display = 'none';
+    return;
+  }
+  section.style.display = '';
+  const proj = getProject(projId);
+  document.getElementById('block-focus-proj-todos-name').textContent = proj ? `${proj.emoji} ${proj.name}` : '';
+  const allTodos = getProjTodos(projId).filter(t => !t.done);
+  const list = document.getElementById('block-focus-proj-todos-list');
+  list.innerHTML = '';
+  if (!day.blockNotes[blockIdx]) day.blockNotes[blockIdx] = { note: '', todos: [], projTodos: [] };
+  const bn = day.blockNotes[blockIdx];
+  if (!bn.projTodos) bn.projTodos = [];
+  if (!allTodos.length) {
+    list.innerHTML = '<div class="block-focus-todo-empty">No project todos.</div>';
+  } else {
+    allTodos.forEach(t => {
+      const isPinned = bn.projTodos.some(r => r.todoId === t.id && r.projId === projId);
+      const progressed = isPinned && hasProjTodoProgressToday(projId, t.id, ds);
+      const item = document.createElement('div');
+      item.className = 'block-proj-todo-item';
+      if (isPinned) {
+        item.innerHTML = `
+          <input type="checkbox" class="block-proj-todo-cb-done" title="Mark as fully done">
+          <span class="block-proj-todo-text">${escAttr(t.text)}</span>
+          <input type="checkbox" class="block-proj-todo-cb-progress" title="Log progress today" ${progressed ? 'checked' : ''}>
+          <span class="block-proj-todo-hint" style="color:var(--gold)">progress</span>
+          <button class="block-proj-todo-unpin" title="Remove from block" style="background:none;border:none;color:var(--faint);cursor:pointer;font-size:10px;padding:0 2px">✕</button>`;
+        item.querySelector('.block-proj-todo-cb-done').addEventListener('change', e => {
+          if (e.target.checked) {
+            completeProjTodo(projId, t.id, blockIdx, ds);
+            renderFocusProjTodos();
+            renderTodayTodos();
+            if (ui.tab === 'todos') renderTodosTab();
+          }
+        });
+        item.querySelector('.block-proj-todo-cb-progress').addEventListener('change', () => {
+          progressProjTodo(projId, t.id, blockIdx, ds);
+          renderFocusProjTodos();
+          renderTodayTodos();
+          if (ui.tab === 'todos') renderTodosTab();
+        });
+        item.querySelector('.block-proj-todo-unpin').addEventListener('click', () => {
+          const dayD = getDay(ds);
+          const b = dayD.blockNotes[blockIdx];
+          if (b) b.projTodos = b.projTodos.filter(r => !(r.todoId === t.id && r.projId === projId));
+          setDay(ds, dayD);
+          save();
+          renderFocusProjTodos();
+          renderTodayTodos();
+        });
+      } else {
+        item.innerHTML = `
+          <span class="block-proj-todo-text" style="color:var(--muted)">${escAttr(t.text)}</span>
+          <button class="block-proj-todo-pin" title="Add to this block" style="background:none;border:1px solid var(--border2);color:var(--faint);cursor:pointer;font-family:'DM Mono',monospace;font-size:9px;padding:2px 6px;border-radius:4px;white-space:nowrap;transition:all .15s">+ add to block</button>`;
+        item.querySelector('.block-proj-todo-pin').addEventListener('mouseenter', e => {
+          e.target.style.borderColor = 'var(--green)';
+          e.target.style.color = 'var(--green)';
+        });
+        item.querySelector('.block-proj-todo-pin').addEventListener('mouseleave', e => {
+          e.target.style.borderColor = 'var(--border2)';
+          e.target.style.color = 'var(--faint)';
+        });
+        item.querySelector('.block-proj-todo-pin').addEventListener('click', () => {
+          const dayD = getDay(ds);
+          if (!dayD.blockNotes[blockIdx]) dayD.blockNotes[blockIdx] = { note: '', todos: [], projTodos: [] };
+          if (!dayD.blockNotes[blockIdx].projTodos) dayD.blockNotes[blockIdx].projTodos = [];
+          dayD.blockNotes[blockIdx].projTodos.push({ projId, todoId: t.id });
+          setDay(ds, dayD);
+          save();
+          renderFocusProjTodos();
+          renderTodayTodos();
+        });
+      }
+      list.appendChild(item);
+    });
+  }
+  const inp = document.getElementById('block-focus-new-proj-todo');
+  inp.value = '';
+  document.getElementById('block-focus-add-proj-todo-btn').onclick = () => addFocusProjTodo();
+  inp.onkeydown = e => { if (e.key === 'Enter') addFocusProjTodo(); };
+}
+
+function addFocusProjTodo() {
+  const blockIdx = ui.focusBlock;
+  if (blockIdx === null || blockIdx === undefined) return;
+  const ds = todayStr();
+  const day = getDay(ds);
+  const projId = (day.schedule || {})[blockIdx];
+  if (!projId) return;
+  const inp = document.getElementById('block-focus-new-proj-todo');
+  const text = inp.value.trim();
+  if (!text) return;
+  addProjTodo(projId, text);
+  inp.value = '';
+  renderFocusProjTodos();
+  renderTodayTodos();
+  if (ui.tab === 'todos') renderTodosTab();
 }
 
 function renderTodayTab() {
@@ -3106,7 +3216,7 @@ function renderNotesTab() {
       const idx = +idxStr;
       const note = (bn.note || '').trim();
       const todos = (bn.todos || []);
-      if (!note && !todos.length) return;
+      if (!note) return;
       const projId = sched[idx];
       if (!projId) return;
       if (!projEntries[projId]) projEntries[projId] = [];
