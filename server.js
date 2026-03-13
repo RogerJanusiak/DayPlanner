@@ -1,6 +1,7 @@
 const http = require('http');
 const fs   = require('fs');
 const path = require('path');
+const { exec } = require('child_process');
 
 const PORT      = 3000;
 const HTML_FILE = path.join(__dirname, 'day-planner.html');
@@ -25,6 +26,25 @@ const server = http.createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
+
+  // ── POST /notify  — fire a native macOS notification ─────
+  if (req.method === 'POST' && req.url === '/notify') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const { title, message } = JSON.parse(body);
+        const safe = s => s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+        exec(`osascript -e 'display notification "${safe(message)}" with title "${safe(title)}" sound name "Glass"'`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      } catch (err) {
+        res.writeHead(500);
+        res.end(JSON.stringify({ ok: false }));
+      }
+    });
+    return;
+  }
 
   // ── POST /save  — receive YAML and write to disk ──────────
   if (req.method === 'POST' && req.url === '/save') {

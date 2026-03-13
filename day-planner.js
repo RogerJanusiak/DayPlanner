@@ -38,7 +38,8 @@ let state = {
   ],
   days: {},
   settings: {
-    dailyGoal: 8
+    dailyGoal: 8,
+    defaultBlockDuration: 30
   },
   projectTodos: {},
   timerState: {
@@ -69,13 +70,15 @@ let ui = {
   notesTabImportanceFilter: 0, // 0=All, 1-5=exact star rating
   focusBlock: null, // block idx shown in focus view
   notesLivePreview: true,
+  soundMuted: false,
 };
 
 // ════════════════════════════════════════════════════════════
 //  HELPERS
 // ════════════════════════════════════════════════════════════
 function todayStr() {
-  return new Date().toISOString().slice(0, 10)
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 }
 
 function dateFromStr(ds) {
@@ -119,8 +122,11 @@ function currentDayData() {
   return getDay(ui.currentDate)
 }
 
+const BREAK_PROJ = { id: '__break__', name: 'Break', emoji: '☕', color: 'var(--muted)' };
+
 function getProject(id) {
-  return state.projects.find(p => p.id === id)
+  if (id === '__break__') return BREAK_PROJ;
+  return state.projects.find(p => p.id === id);
 }
 
 function sortedDays() {
@@ -157,6 +163,11 @@ function currentHourFrac() {
 
 function dailyGoal() {
   return Math.max(1, +(state.settings.dailyGoal) || 8)
+}
+function dailyGoalForDay(ds) {
+  const d = state.days[ds];
+  if (d && d.dailyGoal) return Math.max(1, d.dailyGoal);
+  return dailyGoal();
 }
 
 // ════════════════════════════════════════════════════════════
@@ -204,7 +215,7 @@ function computeMomentum() {
   let m = 100;
   for (const ds of days) {
     const done = (state.days[ds].completed || []).length;
-    if (done >= dailyGoal()) m = Math.min(100, m + 5);
+    if (done >= dailyGoalForDay(ds)) m = Math.min(100, m + 5);
     else m = Math.max(0, m - 10);
   }
   return Math.round(m);
@@ -220,7 +231,7 @@ function computeStats() {
   const streak = computeStreak();
   // completion rate: goals hit / total weekday work days
   const weekdayWorkDays = allDays.filter(([ds, d]) => !isWeekend(ds) && !d.timeOff);
-  const goalsMet = weekdayWorkDays.filter(([, d]) => (d.completed || []).length >= dailyGoal()).length;
+  const goalsMet = weekdayWorkDays.filter(([ds, d]) => (d.completed || []).length >= dailyGoalForDay(ds)).length;
   const rate = weekdayWorkDays.length ? Math.round(goalsMet / weekdayWorkDays.length * 100) : 0;
   return {
     total,
@@ -292,6 +303,7 @@ async function loadFromServer() {
     const p = parseYaml(text);
     if (p.projects.length) state.projects = p.projects;
     if (p.settings && p.settings.dailyGoal) state.settings.dailyGoal = p.settings.dailyGoal;
+    if (p.settings && p.settings.defaultBlockDuration) state.settings.defaultBlockDuration = p.settings.defaultBlockDuration;
     if (p.projectTodos && Object.keys(p.projectTodos).length) state.projectTodos = p.projectTodos;
     if (Object.keys(p.days).length) Object.assign(state.days, p.days);
     return true;
@@ -306,8 +318,10 @@ function load() {
     if (r) state = JSON.parse(r)
   } catch (e) {}
   if (!state.settings) state.settings = {
-    dailyGoal: 8
+    dailyGoal: 8,
+    defaultBlockDuration: 30
   };
+  if (!state.settings.defaultBlockDuration) state.settings.defaultBlockDuration = 30;
   if (!state.projectTodos) state.projectTodos = {};
   Object.keys(state.days).forEach(ds => {
     if (!state.days[ds].blockNotes) state.days[ds].blockNotes = {};
@@ -416,6 +430,7 @@ function toYaml() {
   // settings
   L.push('settings:');
   L.push(`  dailyGoal: ${dailyGoal()}`);
+  L.push(`  defaultBlockDuration: ${state.settings.defaultBlockDuration || 30}`);
   L.push('');
 
   // projects
@@ -455,6 +470,7 @@ function toYaml() {
   L.push('days:');
   Object.entries(state.days).sort().forEach(([ds, data]) => {
     L.push(`  ${yStr(ds)}:`);
+    if (data.dailyGoal) L.push(`    dailyGoal: ${data.dailyGoal}`);
     if (data.timeOff) L.push('    timeOff: true');
 
     const sched = data.schedule || {};
@@ -567,8 +583,10 @@ function parseYaml(text) {
     }
 
     if (mode === 'settings') {
-      const m = trim.match(/^dailyGoal:\s*(\d+)/);
-      if (m) result.settings.dailyGoal = +m[1];
+      const mGoal = trim.match(/^dailyGoal:\s*(\d+)/);
+      if (mGoal) result.settings.dailyGoal = +mGoal[1];
+      const mDur = trim.match(/^defaultBlockDuration:\s*(\d+)/);
+      if (mDur) result.settings.defaultBlockDuration = +mDur[1];
       continue;
     }
 
@@ -679,6 +697,11 @@ function parseYaml(text) {
       if (indent === 4) {
         if (trim === 'timeOff: true') {
           result.days[curDay].timeOff = true;
+          continue;
+        }
+        const dgm = trim.match(/^dailyGoal:\s*(\d+)/);
+        if (dgm) {
+          result.days[curDay].dailyGoal = +dgm[1];
           continue;
         }
         if (trim === 'schedule:') {
@@ -812,6 +835,7 @@ function importYaml(text) {
     const p = parseYaml(text);
     if (p.projects.length) state.projects = p.projects;
     if (p.settings.dailyGoal) state.settings.dailyGoal = p.settings.dailyGoal;
+    if (p.settings.defaultBlockDuration) state.settings.defaultBlockDuration = p.settings.defaultBlockDuration;
     if (p.projectTodos && Object.keys(p.projectTodos).length) Object.assign(state.projectTodos, p.projectTodos);
     Object.assign(state.days, p.days);
     ensureForwardDays();
@@ -826,35 +850,124 @@ function importYaml(text) {
 // ════════════════════════════════════════════════════════════
 //  TIMER
 // ════════════════════════════════════════════════════════════
-function requestNotifPermission() {
-  if ('Notification' in window && Notification.permission === 'default') {
-    Notification.requestPermission();
+function updateNotifEnableRow() {
+  const row = document.getElementById('notif-enable-row');
+  const btn = document.getElementById('notif-enable-btn');
+  if (!row || !btn) return;
+  if (!('Notification' in window)) { row.style.display = 'none'; return; }
+  if (Notification.permission === 'granted') { row.style.display = 'none'; return; }
+  row.style.display = 'block';
+  // 'denied' means the browser blocked it — guide user to settings instead
+  if (Notification.permission === 'denied') {
+    btn.textContent = '🔕 Notifications blocked — click for help';
+  } else {
+    btn.textContent = '🔔 Enable Notifications';
   }
 }
 
-function fireTimerNotification(projName) {
+function enableNotifications() {
+  if (!('Notification' in window)) return;
+  if (Notification.permission === 'denied') {
+    alert('Notifications are blocked for this site.\n\nTo enable them:\n• Chrome: click the 🔒 icon in the address bar → Site settings → Notifications → Allow\n• Safari: Safari menu → Settings → Websites → Notifications → find this site → Allow');
+    return;
+  }
+  Notification.requestPermission().then(updateNotifEnableRow);
+}
+
+function requestNotifPermission() {
+  updateNotifEnableRow();
+}
+
+function testNotification() {
   if (!('Notification' in window)) {
-    // Fallback: show browser alert if Notification API not available
-    alert('✓ Block Complete!\n' + (projName ? projName : 'Your 30-minute block is finished!'));
+    fireTimerNotification({ emoji: '🧪', name: 'Test Block' }, -1);
     return;
   }
-  if (Notification.permission === 'default') {
+  if (Notification.permission === 'granted') {
+    fireTimerNotification({ emoji: '🧪', name: 'Test Block' }, -1);
+  } else if (Notification.permission === 'denied') {
+    alert('Notifications are blocked for this site.\n\nTo enable:\n• Chrome: click the 🔒 icon in the address bar → Site settings → Notifications → Allow\n• Safari: Safari menu → Settings → Websites → Notifications → find this site → Allow');
+  } else {
+    // 'default' — request permission directly from this click, then fire
     Notification.requestPermission().then(perm => {
-      if (perm === 'granted') fireTimerNotification(projName);
+      updateNotifEnableRow();
+      if (perm === 'granted') fireTimerNotification({ emoji: '🧪', name: 'Test Block' }, -1);
     });
-    return;
   }
-  if (Notification.permission !== 'granted') return;
-  const notifTitle = 'Block Complete ✓';
-  const durationText = parseInt(projName?.match(/\d+\s*(?:min|hour|h|m)/)?.[0] || '30') > 30 ? '1-hour' : '30-minute';
-  const n = new Notification(notifTitle, {
-    body: projName ? `${projName}\n${durationText} block finished!` : `${durationText} block finished!`,
-    icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><circle cx="32" cy="32" r="30" fill="%239B8FCF" opacity="0.2"/><text x="32" y="48" text-anchor="middle" font-size="32" font-weight="bold">✓</text></svg>',
-    tag: 'day-planner-timer',
-    silent: false,
-    requireInteraction: false
-  });
-  setTimeout(() => n.close(), 8000);
+}
+
+let _soundCtx = null;
+let _soundInterval = null;
+
+function _playChime() {
+  try {
+    const ctx = _soundCtx || (_soundCtx = new (window.AudioContext || window.webkitAudioContext)());
+    [[0, 523], [0.18, 659], [0.36, 784]].forEach(([t, freq]) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.28, ctx.currentTime + t);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + t + 0.55);
+      osc.start(ctx.currentTime + t);
+      osc.stop(ctx.currentTime + t + 0.55);
+    });
+  } catch (e) {}
+}
+
+function playCompletionSound() {
+  if (ui.soundMuted) return;
+  stopCompletionSound();
+  _playChime();
+  _soundInterval = setInterval(_playChime, 3500);
+}
+
+function stopCompletionSound() {
+  if (_soundInterval) { clearInterval(_soundInterval); _soundInterval = null; }
+}
+
+function dismissPopup() {
+  const popup = document.getElementById('block-complete-popup');
+  if (popup) popup.classList.remove('visible');
+  stopCompletionSound();
+}
+
+function showBlockCompletePopup(proj, completedIdx) {
+  const popup = document.getElementById('block-complete-popup');
+  if (!popup) return;
+  document.getElementById('bcp-proj-name').textContent = proj ? `${proj.emoji} ${proj.name}` : 'Block';
+  const day = currentDayData();
+  const sched = day.schedule || {};
+  const done = new Set(day.completed || []);
+  const nextIdx = Object.keys(sched).map(Number).sort((a, b) => a - b)
+    .find(i => i > completedIdx && !done.has(i) && sched[i] !== '__break__');
+  const nextBtn = document.getElementById('bcp-next-btn');
+  nextBtn.style.display = nextIdx !== undefined ? '' : 'none';
+  nextBtn.onclick = () => { dismissPopup(); startTimer(nextIdx); };
+  // Extend button — only for 30-min blocks with room to expand
+  const extendBtn = document.getElementById('bcp-extend-btn');
+  if (extendBtn) {
+    const span = (day.blockSpan || {})[completedIdx] || 1;
+    const canExtend = span === 1 && completedIdx + 1 <= 35;
+    extendBtn.style.display = canExtend ? '' : 'none';
+    extendBtn.onclick = () => extendBlockFromAlarm(completedIdx);
+  }
+  document.getElementById('bcp-dismiss-btn').onclick = dismissPopup;
+  document.getElementById('bcp-sound-btn').onclick = dismissPopup;
+  popup.classList.add('visible');
+}
+
+function fireTimerNotification(proj, completedIdx) {
+  const projName = proj ? `${proj.emoji} ${proj.name}` : '';
+  if ('Notification' in window && Notification.permission === 'granted') {
+    new Notification('Block Complete', {
+      body: projName ? `${projName} — block finished!` : 'Your block is finished!',
+    });
+  }
+  playCompletionSound();
+  showBlockCompletePopup(proj, completedIdx);
 }
 
 function startTimer(blockIdx) {
@@ -878,8 +991,9 @@ function startTimer(blockIdx) {
 
 function tickTimer() {
   if (getTimerRemaining() <= 0) {
-    const proj = getProject((currentDayData().schedule || {})[ui.activeBlock]);
-    completeBlock(ui.activeBlock);
+    const completedIdx = ui.activeBlock;
+    const proj = getProject((currentDayData().schedule || {})[completedIdx]);
+    completeBlock(completedIdx);
     clearInterval(ui.timerInterval);
     ui.timerRunning = false;
     ui.timerElapsedMs = 0;
@@ -892,15 +1006,19 @@ function tickTimer() {
       date: null
     };
     save();
-    fireTimerNotification(proj ? `${proj.emoji} ${proj.name}` : '');
+    fireTimerNotification(proj, completedIdx);
     hideBlockFocus();
     renderAll();
     return;
   }
   renderTimerCard();
-  renderDayflowMini();
   renderGamePanel();
   renderPlanBanner();
+  // Update countdown in focus view header
+  const focusTimeEl = document.getElementById('block-focus-time');
+  if (focusTimeEl && focusTimeEl.dataset.countdown === '1') {
+    focusTimeEl.textContent = formatSecs(getTimerRemaining());
+  }
 }
 
 function pauseResumeTimer() {
@@ -959,6 +1077,93 @@ function completeBlock(idx) {
     setDay(ui.currentDate, day);
     save();
   }
+  // If this block is the active timer block, stop the timer
+  if (ui.activeBlock === idx) {
+    clearInterval(ui.timerInterval);
+    ui.timerRunning = false;
+    ui.timerElapsedMs = 0;
+    ui.timerStartedAt = null;
+    ui.activeBlock = null;
+    state.timerState = { activeBlock: null, startedAt: null, elapsedMs: 0, date: null };
+    save();
+    hideBlockFocus();
+  }
+}
+
+// Extend a currently-running 30-min block to 1 hour.
+// Called from focus screen while timer is running.
+function extendBlock(blockIdx) {
+  const day = currentDayData();
+  const span = (day.blockSpan || {})[blockIdx] || 1;
+  if (span !== 1) return; // already 1hr or longer
+  if (blockIdx + 1 > 35) { alert('Not enough room to extend this block.'); return; }
+  const projId = (day.schedule || {})[blockIdx];
+  if (!projId) return;
+  const nextOccupied = day.schedule[blockIdx + 1];
+  if (nextOccupied && nextOccupied !== projId) {
+    if (!confirm('The next 30-minute slot is occupied. Remove it to extend this block?')) return;
+  }
+  if (!day.blockSpan) day.blockSpan = {};
+  // Clear the next slot
+  delete day.schedule[blockIdx + 1];
+  day.completed = day.completed.filter(i => i !== blockIdx + 1);
+  if (day.blockNotes) delete day.blockNotes[blockIdx + 1];
+  delete day.blockSpan[blockIdx + 1];
+  // Set this block to 1-hour span
+  day.schedule[blockIdx + 1] = projId;
+  day.blockSpan[blockIdx] = 2;
+  setDay(ui.currentDate, day);
+  save();
+  // Timer duration auto-updates from blockSpan — no elapsed time change needed
+  renderScheduleGrid();
+  renderSidebar();
+  renderTodayTab();
+  renderHeaderStats();
+  renderBlockFocus();
+}
+
+// Extend a just-completed 30-min block by 30 more minutes and restart the timer.
+// Called from the block complete popup.
+function extendBlockFromAlarm(completedIdx) {
+  const day = currentDayData();
+  const span = (day.blockSpan || {})[completedIdx] || 1;
+  if (span !== 1) return;
+  if (completedIdx + 1 > 35) { alert('Not enough room to extend this block.'); return; }
+  const projId = (day.schedule || {})[completedIdx];
+  if (!projId) return;
+  const nextOccupied = day.schedule[completedIdx + 1];
+  if (nextOccupied && nextOccupied !== projId) {
+    if (!confirm('The next 30-minute slot is occupied. Remove it to extend this block?')) return;
+  }
+  if (!day.blockSpan) day.blockSpan = {};
+  // Expand to 1-hour block
+  delete day.schedule[completedIdx + 1];
+  day.completed = day.completed.filter(i => i !== completedIdx && i !== completedIdx + 1);
+  if (day.blockNotes) delete day.blockNotes[completedIdx + 1];
+  delete day.blockSpan[completedIdx + 1];
+  day.schedule[completedIdx + 1] = projId;
+  day.blockSpan[completedIdx] = 2;
+  setDay(ui.currentDate, day);
+  // Dismiss the popup and stop sound
+  dismissPopup();
+  // Restart timer — 30 minutes already elapsed, 30 minutes remain
+  clearInterval(ui.timerInterval);
+  requestNotifPermission();
+  ui.activeBlock = completedIdx;
+  ui.timerElapsedMs = 30 * 60 * 1000;
+  ui.timerStartedAt = Date.now();
+  ui.timerRunning = true;
+  state.timerState = {
+    activeBlock: completedIdx,
+    startedAt: ui.timerStartedAt,
+    elapsedMs: ui.timerElapsedMs,
+    date: todayStr()
+  };
+  save();
+  ui.timerInterval = setInterval(tickTimer, 500);
+  switchTab('today');
+  showBlockFocus(completedIdx);
+  renderAll();
 }
 
 // ════════════════════════════════════════════════════════════
@@ -1127,13 +1332,6 @@ function openNotesModal(blockIdx, ds, notesOnly) {
   const previewBtn = document.getElementById('notes-mode-preview');
   const liveBtn = document.getElementById('notes-live-btn');
   const editArea = document.getElementById('notes-edit-area');
-  const todoSections = [
-    document.querySelector('.notes-section-label.notes-gap'),
-    document.getElementById('todo-list'),
-    document.getElementById('add-todo-row'),
-    document.getElementById('block-proj-todos-section')
-  ];
-
   // Reset state
   modal.classList.toggle('notes-only', !!notesOnly);
   editArea.classList.remove('live');
@@ -1141,7 +1339,6 @@ function openNotesModal(blockIdx, ds, notesOnly) {
   preview.onclick = null;
 
   if (notesOnly) {
-    todoSections.forEach(el => el && (el.style.display = 'none'));
     editBtn.style.display = 'none';
     previewBtn.style.display = 'none';
     liveBtn.style.display = '';
@@ -1158,7 +1355,6 @@ function openNotesModal(blockIdx, ds, notesOnly) {
       updateLiveState();
     };
   } else {
-    todoSections.forEach(el => el && (el.style.display = ''));
     editBtn.style.display = '';
     previewBtn.style.display = '';
     liveBtn.style.display = 'none';
@@ -1179,7 +1375,6 @@ function openNotesModal(blockIdx, ds, notesOnly) {
     editBtn.onclick = showEdit;
     previewBtn.onclick = showPreview;
     preview.onclick = showEdit;
-    renderTodoList(ex.todos || []);
     renderBlockProjTodos(proj?.id, blockIdx, ui.notesDate);
   }
 
@@ -1205,19 +1400,13 @@ function saveNotesModal() {
   const blockIdx = ui.notesBlockIdx,
     ds = ui.notesDate;
   const note = document.getElementById('notes-textarea').value;
-  const todos = [...document.querySelectorAll('#todo-list .todo-item')].map(item => ({
-    id: item.dataset.id || String(Date.now() + Math.random()),
-    text: item.querySelector('.todo-text').value,
-    done: item.querySelector('.todo-cb').checked
-  }));
   const importance = [...document.querySelectorAll('#star-picker .star-btn')].filter(b => b.classList.contains('active')).length || null;
   const day = getDay(ds);
   if (!day.blockNotes) day.blockNotes = {};
-  // Preserve projTodos if they exist
   const existingProjTodos = (day.blockNotes[blockIdx] || {}).projTodos || [];
   day.blockNotes[blockIdx] = {
     note,
-    todos,
+    todos: [],
     projTodos: existingProjTodos,
     importance
   };
@@ -1235,24 +1424,6 @@ function closeNotesModal() {
   ui.notesDate = null
 }
 
-function addTodoItem() {
-  const input = document.getElementById('new-todo-input'),
-    text = input.value.trim();
-  if (!text) return;
-  const todos = [...document.querySelectorAll('#todo-list .todo-item')].map(item => ({
-    id: item.dataset.id,
-    text: item.querySelector('.todo-text').value,
-    done: item.querySelector('.todo-cb').checked
-  }));
-  todos.push({
-    id: String(Date.now()),
-    text,
-    done: false
-  });
-  renderTodoList(todos);
-  input.value = '';
-  input.focus();
-}
 
 // ════════════════════════════════════════════════════════════
 //  PROJECT TODOS
@@ -1777,7 +1948,7 @@ function renderHeaderStats() {
     s = computeStats();
   document.getElementById('stat-planned').textContent = Object.keys(day.schedule || {}).length;
   document.getElementById('stat-done').textContent = (day.completed || []).length;
-  const goal = dailyGoal(),
+  const goal = dailyGoalForDay(ui.currentDate),
     done = (day.completed || []).length;
   const pct = goal > 0 ? Math.round(done / goal * 100) : 0;
   document.getElementById('stat-goal-pct').textContent = goal ? `${pct}%` : '—';
@@ -1869,7 +2040,11 @@ function renderSidebar() {
     }
   });
   // Goal input
-  document.getElementById('goal-input').value = dailyGoal();
+  document.getElementById('goal-input').value = dailyGoalForDay(ui.currentDate);
+  // Default block duration toggle
+  const dur = state.settings.defaultBlockDuration || 30;
+  document.getElementById('dur-btn-30').classList.toggle('active', dur === 30);
+  document.getElementById('dur-btn-60').classList.toggle('active', dur === 60);
   // project stats
   const statList = document.getElementById('proj-stat-list');
   statList.innerHTML = '';
@@ -1921,6 +2096,30 @@ function openDropdown(blockIdx) {
   const dd = document.createElement('div');
   dd.className = 'dropdown';
   dd.id = `dd-${blockIdx}`;
+  // Break option
+  const breakItem = document.createElement('div');
+  breakItem.className = 'dropdown-item';
+  breakItem.style.color = 'var(--muted)';
+  const bName = document.createElement('span');
+  bName.style.flex = '1';
+  bName.textContent = '☕ Break';
+  breakItem.appendChild(bName);
+  const bBtn30 = document.createElement('button');
+  bBtn30.className = 'dd-dur-btn';
+  bBtn30.textContent = '30m';
+  bBtn30.onclick = e => { e.stopPropagation(); assignBlock(blockIdx, '__break__'); };
+  breakItem.appendChild(bBtn30);
+  if (blockIdx + 1 <= 35) {
+    const bBtn1h = document.createElement('button');
+    bBtn1h.className = 'dd-dur-btn';
+    bBtn1h.textContent = '1h';
+    bBtn1h.onclick = e => { e.stopPropagation(); assignBlock1hr(blockIdx, '__break__'); };
+    breakItem.appendChild(bBtn1h);
+  }
+  dd.appendChild(breakItem);
+  const sep = document.createElement('div');
+  sep.style.cssText = 'height:1px;background:var(--border);margin:4px 0';
+  dd.appendChild(sep);
   state.projects.forEach(p => {
     const item = document.createElement('div');
     item.className = 'dropdown-item';
@@ -1955,34 +2154,7 @@ function openDropdown(blockIdx) {
   anchor.appendChild(dd);
 }
 
-function updateTimeneedle() {
-  const needle = document.getElementById('time-needle');
-  if (ui.tab !== 'plan') {
-    needle.style.display = 'none';
-    return;
-  }
-  const hf = currentHourFrac();
-  if (hf < 6 || hf > 24) {
-    needle.style.display = 'none';
-    return;
-  }
-  const blockIdx = Math.min(Math.floor((hf - 6) * 2), 35);
-  const rowEl = document.getElementById(`block-row-${blockIdx}`);
-  if (!rowEl) {
-    needle.style.display = 'none';
-    return;
-  }
-  const panel = document.getElementById('plan-panel');
-  const relTop = rowEl.getBoundingClientRect().top - panel.getBoundingClientRect().top + panel.scrollTop;
-  // Place needle at the TOP of the current block row (before the block)
-  needle.style.display = 'block';
-  needle.style.top = relTop + 'px';
-  const now = new Date(),
-    hr = now.getHours() % 12 || 12,
-    mn = String(now.getMinutes()).padStart(2, '0'),
-    ap = now.getHours() < 12 ? 'AM' : 'PM';
-  document.getElementById('time-needle-label').textContent = `${hr}:${mn} ${ap}`;
-}
+function updateTimeneedle() {}
 
 function renderPlanBanner() {
   const planBanner = document.getElementById('plan-active-banner');
@@ -2017,12 +2189,15 @@ function renderScheduleGrid() {
     for (let i = 1; i < span; i++) spannedSlots.add(+startIdx + i);
   });
   const readOnly = false;
-  for (let h = 6; h <= 23; h++) {
+  const scheduledIdxs = Object.keys(sched).map(Number).filter(i => sched[i]);
+  const lastPlannedIdx = scheduledIdxs.length > 0 ? Math.max(...scheduledIdxs) : -1;
+  const maxH = Math.min(23, 6 + Math.floor((lastPlannedIdx + 1) / 2));
+  for (let h = 6; h <= maxH; h++) {
     const group = document.createElement('div');
     group.className = 'hour-group';
     const lbl = document.createElement('div');
     lbl.className = 'hour-label';
-    lbl.textContent = formatTime(h, false);
+    lbl.textContent = String(h - 5).padStart(2, '0');
     group.appendChild(lbl);
     const blocks = document.createElement('div');
     blocks.className = 'hour-blocks';
@@ -2032,6 +2207,7 @@ function renderScheduleGrid() {
       if (spannedSlots.has(idx)) continue;
       const projId = sched[idx],
         proj = projId ? getProject(projId) : null;
+      const isBreak = projId === '__break__';
       const span = blockSpan[idx] || 1;
       const isCompleted = done.has(idx),
         isActive = ui.activeBlock === idx,
@@ -2041,12 +2217,6 @@ function renderScheduleGrid() {
       row.className = baseClass + (span >= 2 ? ' block-row-1h' : '');
       row.id = `block-row-${idx}`;
       row.dataset.idx = idx;
-      if (half === 1 && span < 2) {
-        const hl = document.createElement('div');
-        hl.className = 'block-half-label';
-        hl.textContent = formatTime(h, true);
-        row.appendChild(hl);
-      }
       if (!readOnly && proj) {
         const dh = document.createElement('span');
         dh.className = 'drag-handle';
@@ -2055,8 +2225,8 @@ function renderScheduleGrid() {
         row.appendChild(dh);
       }
       const bar = document.createElement('div');
-      bar.className = 'color-bar';
-      bar.style.background = proj ? proj.color : 'var(--bg3)';
+      bar.className = 'color-bar' + (isBreak ? ' break-bar' : '');
+      if (!isBreak) bar.style.background = proj ? proj.color : 'var(--bg3)';
       bar.style.opacity = isCompleted ? '.35' : '1';
       if (span >= 2) bar.style.height = '50px';
       row.appendChild(bar);
@@ -2081,14 +2251,9 @@ function renderScheduleGrid() {
         if (span >= 2) {
           const timeLine = document.createElement('div');
           timeLine.style.cssText = 'font-size:9px;color:var(--faint);display:flex;align-items:center;gap:6px';
-          const [eh, ehalf] = blockToTime(idx + span);
-          timeLine.innerHTML = `${formatTime(h,half===1)} → ${formatTime(eh,ehalf===1)} <span class="block-1h-badge">1h</span>`;
+          timeLine.innerHTML = `<span class="block-1h-badge">1h</span>`;
           label.appendChild(timeLine);
         }
-        label.querySelector('.badge-notes')?.addEventListener('click', e => {
-          e.stopPropagation();
-          openNotesModal(idx);
-        });
       } else {
         label.style.color = 'var(--faint)';
         label.textContent = '—';
@@ -2099,7 +2264,7 @@ function renderScheduleGrid() {
         actions.className = 'block-actions';
         actions.id = `actions-${idx}`;
         actions.style.opacity = '0';
-        if (proj && !isCompleted && !isActive && isToday()) {
+        if (proj && !isBreak && !isCompleted && !isActive && isToday()) {
           const sb = document.createElement('button');
           sb.className = 'start-btn-small';
           sb.textContent = '▶ start';
@@ -2172,6 +2337,14 @@ function renderScheduleGrid() {
         }
         row.appendChild(actions);
       }
+      // Click row body to open notes (guard against drag firing a click)
+      if (proj && !isBreak) {
+        row.style.cursor = 'pointer';
+        let rowDragged = false;
+        row.addEventListener('mousedown', () => { rowDragged = false; });
+        row.addEventListener('dragstart', () => { rowDragged = true; });
+        row.addEventListener('click', () => { if (!rowDragged) openNotesModal(idx); });
+      }
       // Block-to-block drag (only for 30-min blocks; skip drag for spans to keep it simple)
       if (!readOnly && proj && span < 2) {
         row.draggable = true;
@@ -2207,7 +2380,11 @@ function renderScheduleGrid() {
           const projData = e.dataTransfer.getData('proj');
           const blockData = e.dataTransfer.getData('blockIdx');
           if (projData) {
-            assignBlock(idx, projData);
+            if ((state.settings.defaultBlockDuration || 30) === 60) {
+              assignBlock1hr(idx, projData);
+            } else {
+              assignBlock(idx, projData);
+            }
           } else if (blockData) {
             const srcIdx = parseInt(blockData);
             if (!isNaN(srcIdx) && srcIdx !== idx) moveBlock(srcIdx, idx);
@@ -2239,9 +2416,13 @@ function renderTimerCard() {
     const proj = getProject((day.schedule || {})[ui.activeBlock]);
     document.getElementById('timer-project-name').textContent = proj ? `${proj.emoji} ${proj.name}` : 'Active block';
     document.getElementById('timer-ring').style.stroke = proj ? proj.color : 'var(--gold)';
-    document.getElementById('timer-controls').innerHTML = `<button class="timer-btn" id="tp-btn">${ui.timerRunning?'⏸ Pause':'▶ Resume'}</button><button class="timer-btn ghost" id="td-btn">✓ Done</button>`;
+    const activeSpan = (currentDayData().blockSpan || {})[ui.activeBlock] || 1;
+    const canExtendNow = activeSpan === 1 && ui.activeBlock + 1 <= 35;
+    document.getElementById('timer-controls').innerHTML = `<button class="timer-btn" id="tp-btn">${ui.timerRunning?'⏸ Pause':'▶ Resume'}</button><button class="timer-btn ghost" id="td-btn">✓ Done</button>${canExtendNow ? '<button class="timer-btn extend" id="te-btn">+30m</button>' : ''}`;
     document.getElementById('tp-btn').onclick = pauseResumeTimer;
     document.getElementById('td-btn').onclick = doneTimer;
+    const teBtn = document.getElementById('te-btn');
+    if (teBtn) teBtn.onclick = () => extendBlock(ui.activeBlock);
   } else {
     document.getElementById('timer-project-name').textContent = 'No active block';
     document.getElementById('timer-ring').style.stroke = 'var(--gold)';
@@ -2255,7 +2436,7 @@ function renderTimerCard() {
 function renderGamePanel() {
   const day = currentDayData(),
     done = (day.completed || []).length,
-    goal = dailyGoal();
+    goal = dailyGoalForDay(ui.currentDate);
   const s = computeStats();
   // Goal bar
   const goalPct = Math.min(100, goal > 0 ? done / goal * 100 : 0);
@@ -2292,7 +2473,28 @@ function renderGamePanel() {
     m >= 40 ? 'Momentum steady — don\'t break the chain' :
     m >= 20 ? 'Momentum fading — get back on track' :
     'Momentum critical — time to rebuild';
-  document.getElementById('decay-hint').textContent = hint;
+  // Update hint text in tooltip (kept for dynamic message)
+  const hintEl = document.getElementById('decay-hint');
+  if (hintEl) hintEl.textContent = hint;
+
+  // Project todos today — count projTodos pinned to today's blocks
+  const blockNotes = day.blockNotes || {};
+  const ds = ui.currentDate;
+  let projTodoTotal = 0, projTodoDone = 0;
+  Object.values(blockNotes).forEach(bn => {
+    (bn.projTodos || []).forEach(ref => {
+      const pt = (getProjTodos(ref.projId) || []).find(x => x.id === ref.todoId);
+      if (!pt) return;
+      projTodoTotal++;
+      if (pt.done || hasProjTodoProgressToday(ref.projId, ref.todoId, ds)) projTodoDone++;
+    });
+  });
+  document.getElementById('gv-proj-todos').textContent = `${projTodoDone}/${projTodoTotal}`;
+  document.getElementById('gb-proj-todos').style.width = projTodoTotal > 0 ? Math.min(100, projTodoDone / projTodoTotal * 100) + '%' : '0%';
+
+  // Best day + Avg (numbers only)
+  document.getElementById('gv-best').textContent = s.best;
+  document.getElementById('gv-avg').textContent = s.avg;
 }
 
 // ════════════════════════════════════════════════════════════
@@ -2497,7 +2699,15 @@ function renderBlockFocus() {
   // Header
   document.getElementById('block-focus-title').textContent = proj ? `${proj.emoji} ${proj.name}` : 'Block';
   document.getElementById('block-focus-title').style.color = proj ? proj.color : 'var(--text)';
-  document.getElementById('block-focus-time').textContent = timeLabel;
+  // Show countdown if timer is running for this block, otherwise fall back to time range
+  const focusTimeEl = document.getElementById('block-focus-time');
+  if (ui.activeBlock === blockIdx && ui.timerRunning) {
+    focusTimeEl.textContent = formatSecs(getTimerRemaining());
+    focusTimeEl.dataset.countdown = '1';
+  } else {
+    focusTimeEl.textContent = timeLabel;
+    focusTimeEl.dataset.countdown = '';
+  }
 
   // ── Importance stars ──
   const focusImpVal = bn.importance || 0;
@@ -2575,17 +2785,44 @@ function renderBlockFocus() {
   noteArea.onblur = () => saveBlockFocusNote();
   saveBtn.onclick = () => saveBlockFocusNote(true);
 
-  // Todos
-  renderBlockFocusTodos();
-  const inp = document.getElementById('block-focus-new-todo');
-  inp.value = '';
-  document.getElementById('block-focus-add-todo-btn').onclick = () => addBlockFocusTodo();
-  inp.onkeydown = e => {
-    if (e.key === 'Enter') addBlockFocusTodo();
-  };
-
   // Project todos
   renderFocusProjTodos();
+
+  // Recent notes from the same project
+  const recentSection = document.getElementById('block-focus-recent-notes-section');
+  const recentList = document.getElementById('block-focus-recent-notes-list');
+  if (recentSection && recentList && proj) {
+    const entries = [];
+    Object.entries(state.days).forEach(([entryDs, dayData]) => {
+      Object.entries(dayData.blockNotes || {}).forEach(([idxStr, entryBn]) => {
+        const entryIdx = +idxStr;
+        if ((dayData.schedule || {})[entryIdx] !== proj.id) return;
+        const note = (entryBn.note || '').trim();
+        if (!note) return;
+        // Skip the current block
+        if (entryDs === ds && entryIdx === blockIdx) return;
+        entries.push({ ds: entryDs, note });
+      });
+    });
+    // Sort newest first, take last 3
+    entries.sort((a, b) => b.ds.localeCompare(a.ds));
+    const recent = entries.slice(0, 3);
+    if (recent.length) {
+      recentSection.style.display = '';
+      recentList.innerHTML = '';
+      recent.forEach(e => {
+        const card = document.createElement('div');
+        card.className = 'focus-recent-note';
+        card.innerHTML = `<div class="focus-recent-note-meta">${formatDateLabel(e.ds)}</div>
+          <div class="focus-recent-note-text md-preview" style="padding:0;background:none;border:none">${renderMarkdown(e.note)}</div>`;
+        recentList.appendChild(card);
+      });
+    } else {
+      recentSection.style.display = 'none';
+    }
+  } else if (recentSection) {
+    recentSection.style.display = 'none';
+  }
 }
 
 function saveBlockFocusNote(flash) {
@@ -2620,66 +2857,6 @@ function saveBlockFocusNote(flash) {
   }
 }
 
-function renderBlockFocusTodos() {
-  const blockIdx = ui.focusBlock;
-  if (blockIdx === null || blockIdx === undefined) return;
-  const ds = todayStr();
-  const day = getDay(ds);
-  const bn = (day.blockNotes || {})[blockIdx] || {
-    note: '',
-    todos: []
-  };
-  const list = document.getElementById('block-focus-todo-list');
-  list.innerHTML = '';
-  if (!(bn.todos || []).length) {
-    list.innerHTML = '<div class="block-focus-todo-empty">No to-dos yet.</div>';
-    return;
-  }
-  bn.todos.forEach(t => {
-    const row = document.createElement('div');
-    row.className = 'block-focus-todo-item';
-    row.innerHTML = `<input type="checkbox" class="block-focus-todo-cb"${t.done?' checked':''}><span class="block-focus-todo-text${t.done?' done':''}">${escAttr(t.text)}</span>`;
-    row.querySelector('.block-focus-todo-cb').onchange = e => {
-      const dayD = getDay(ds);
-      const b = dayD.blockNotes[blockIdx];
-      if (b) {
-        const todo = b.todos.find(x => x.id === t.id);
-        if (todo) {
-          todo.done = e.target.checked;
-          setDay(ds, dayD);
-          save();
-          renderBlockFocusTodos();
-          renderTodayTodos();
-        }
-      }
-    };
-    list.appendChild(row);
-  });
-}
-
-function addBlockFocusTodo() {
-  const blockIdx = ui.focusBlock;
-  if (blockIdx === null || blockIdx === undefined) return;
-  const inp = document.getElementById('block-focus-new-todo');
-  const text = inp.value.trim();
-  if (!text) return;
-  const ds = todayStr();
-  const day = getDay(ds);
-  if (!day.blockNotes[blockIdx]) day.blockNotes[blockIdx] = {
-    note: '',
-    todos: []
-  };
-  day.blockNotes[blockIdx].todos.push({
-    id: 't' + Date.now(),
-    text,
-    done: false
-  });
-  setDay(ds, day);
-  save();
-  inp.value = '';
-  renderBlockFocusTodos();
-  renderTodayTodos();
-}
 
 function renderFocusProjTodos() {
   const blockIdx = ui.focusBlock;
@@ -2695,21 +2872,32 @@ function renderFocusProjTodos() {
   section.style.display = '';
   const proj = getProject(projId);
   document.getElementById('block-focus-proj-todos-name').textContent = proj ? `${proj.emoji} ${proj.name}` : '';
-  const allTodos = getProjTodos(projId).filter(t => !t.done);
+  const allTodos = getProjTodos(projId);
   const list = document.getElementById('block-focus-proj-todos-list');
   list.innerHTML = '';
   if (!day.blockNotes[blockIdx]) day.blockNotes[blockIdx] = { note: '', todos: [], projTodos: [] };
   const bn = day.blockNotes[blockIdx];
   if (!bn.projTodos) bn.projTodos = [];
-  if (!allTodos.length) {
+
+  // Split into: pinned-to-this-block (done or not), and unpinned active (not done)
+  const pinnedTodos = allTodos.filter(t => bn.projTodos.some(r => r.todoId === t.id && r.projId === projId));
+  const unpinnedActive = allTodos.filter(t => !t.done && !bn.projTodos.some(r => r.todoId === t.id && r.projId === projId));
+
+  if (!pinnedTodos.length && !unpinnedActive.length) {
     list.innerHTML = '<div class="block-focus-todo-empty">No project todos.</div>';
   } else {
-    allTodos.forEach(t => {
-      const isPinned = bn.projTodos.some(r => r.todoId === t.id && r.projId === projId);
-      const progressed = isPinned && hasProjTodoProgressToday(projId, t.id, ds);
+    // Render pinned todos first (done ones crossed out, undone ones with controls)
+    pinnedTodos.forEach(t => {
+      const progressed = hasProjTodoProgressToday(projId, t.id, ds);
       const item = document.createElement('div');
       item.className = 'block-proj-todo-item';
-      if (isPinned) {
+      if (t.done) {
+        // Completed — show crossed out, no interaction
+        item.innerHTML = `
+          <input type="checkbox" checked disabled style="opacity:.4">
+          <span class="block-proj-todo-text" style="text-decoration:line-through;color:var(--faint)">${escAttr(t.text)}</span>
+          <span class="block-proj-todo-hint" style="color:var(--green);margin-left:auto">done ✓</span>`;
+      } else {
         item.innerHTML = `
           <input type="checkbox" class="block-proj-todo-cb-done" title="Mark as fully done">
           <span class="block-proj-todo-text">${escAttr(t.text)}</span>
@@ -2721,6 +2909,7 @@ function renderFocusProjTodos() {
             completeProjTodo(projId, t.id, blockIdx, ds);
             renderFocusProjTodos();
             renderTodayTodos();
+            renderGamePanel();
             if (ui.tab === 'todos') renderTodosTab();
           }
         });
@@ -2739,29 +2928,34 @@ function renderFocusProjTodos() {
           renderFocusProjTodos();
           renderTodayTodos();
         });
-      } else {
-        item.innerHTML = `
-          <span class="block-proj-todo-text" style="color:var(--muted)">${escAttr(t.text)}</span>
-          <button class="block-proj-todo-pin" title="Add to this block" style="background:none;border:1px solid var(--border2);color:var(--faint);cursor:pointer;font-family:'DM Mono',monospace;font-size:9px;padding:2px 6px;border-radius:4px;white-space:nowrap;transition:all .15s">+ add to block</button>`;
-        item.querySelector('.block-proj-todo-pin').addEventListener('mouseenter', e => {
-          e.target.style.borderColor = 'var(--green)';
-          e.target.style.color = 'var(--green)';
-        });
-        item.querySelector('.block-proj-todo-pin').addEventListener('mouseleave', e => {
-          e.target.style.borderColor = 'var(--border2)';
-          e.target.style.color = 'var(--faint)';
-        });
-        item.querySelector('.block-proj-todo-pin').addEventListener('click', () => {
-          const dayD = getDay(ds);
-          if (!dayD.blockNotes[blockIdx]) dayD.blockNotes[blockIdx] = { note: '', todos: [], projTodos: [] };
-          if (!dayD.blockNotes[blockIdx].projTodos) dayD.blockNotes[blockIdx].projTodos = [];
-          dayD.blockNotes[blockIdx].projTodos.push({ projId, todoId: t.id });
-          setDay(ds, dayD);
-          save();
-          renderFocusProjTodos();
-          renderTodayTodos();
-        });
       }
+      list.appendChild(item);
+    });
+    // Render unpinned active todos below
+    unpinnedActive.forEach(t => {
+      const item = document.createElement('div');
+      item.className = 'block-proj-todo-item';
+      item.innerHTML = `
+        <span class="block-proj-todo-text" style="color:var(--muted)">${escAttr(t.text)}</span>
+        <button class="block-proj-todo-pin" title="Add to this block" style="background:none;border:1px solid var(--border2);color:var(--faint);cursor:pointer;font-family:'DM Mono',monospace;font-size:9px;padding:2px 6px;border-radius:4px;white-space:nowrap;transition:all .15s">+ add to block</button>`;
+      item.querySelector('.block-proj-todo-pin').addEventListener('mouseenter', e => {
+        e.target.style.borderColor = 'var(--green)';
+        e.target.style.color = 'var(--green)';
+      });
+      item.querySelector('.block-proj-todo-pin').addEventListener('mouseleave', e => {
+        e.target.style.borderColor = 'var(--border2)';
+        e.target.style.color = 'var(--faint)';
+      });
+      item.querySelector('.block-proj-todo-pin').addEventListener('click', () => {
+        const dayD = getDay(ds);
+        if (!dayD.blockNotes[blockIdx]) dayD.blockNotes[blockIdx] = { note: '', todos: [], projTodos: [] };
+        if (!dayD.blockNotes[blockIdx].projTodos) dayD.blockNotes[blockIdx].projTodos = [];
+        dayD.blockNotes[blockIdx].projTodos.push({ projId, todoId: t.id });
+        setDay(ds, dayD);
+        save();
+        renderFocusProjTodos();
+        renderTodayTodos();
+      });
       list.appendChild(item);
     });
   }
@@ -2791,7 +2985,6 @@ function addFocusProjTodo() {
 function renderTodayTab() {
   renderTimerCard();
   renderGamePanel();
-  renderDayflowMini();
   renderTimeline();
   renderTodayTodos();
   renderTodayNotes();
@@ -2927,36 +3120,14 @@ function renderTimeline() {
     list.innerHTML = `<div style="font-family:'DM Mono',monospace;font-size:12px;color:var(--faint);margin-top:60px;text-align:center;line-height:2">No blocks planned yet.<br>Go to Plan tab or drag a project to start.</div>`;
     return;
   }
-  const hf = currentHourFrac();
-  let nowInserted = false;
   entries.forEach(({
     idx,
     proj
   }, i) => {
     const isCompleted = done.has(idx),
       isActive = ui.activeBlock === idx;
-    const [h, half] = blockToTime(idx), bhf = h + half * .5;
     const hasNotes = blockHasContent(idx),
       notes = (day.blockNotes || {})[idx];
-    if (isToday() && !nowInserted && bhf > hf) {
-      nowInserted = true;
-      const nowEl = document.createElement('div');
-      nowEl.className = 'tl-now-marker';
-      const now = new Date(),
-        hr = now.getHours() % 12 || 12,
-        mn = String(now.getMinutes()).padStart(2, '0'),
-        ap = now.getHours() < 12 ? 'AM' : 'PM';
-      nowEl.innerHTML = `<div class="tl-now-dot"></div><div class="tl-now-line"></div><div class="tl-now-label">NOW · ${hr}:${mn} ${ap}</div>`;
-      list.appendChild(nowEl);
-    }
-    const prevEntry = entries[i - 1],
-      prevH = prevEntry ? blockToTime(prevEntry.idx)[0] : null;
-    if (!prevEntry || h !== prevH) {
-      const hm = document.createElement('div');
-      hm.className = 'tl-hour-marker';
-      hm.innerHTML = `<div class="tl-hour-text">${formatTime(h,false)}</div><div class="tl-hour-line"></div>`;
-      list.appendChild(hm);
-    }
     const block = document.createElement('div');
     block.className = 'tl-block' + (isActive ? ' tl-active' : '') + (isCompleted ? ' tl-done' : '');
     block.id = `tl-block-${idx}`;
@@ -2974,7 +3145,7 @@ function renderTimeline() {
     }
     block.innerHTML = `<div class="tl-accent" style="background:${proj.color};opacity:${isCompleted?.3:1}"></div>
       <div class="tl-inner">
-        <div class="tl-time">${formatTime(h,half)}</div>
+        <div class="tl-block-num">#${i + 1}</div>
         <div class="tl-info">
           <div class="tl-proj-name" style="color:${isCompleted?'var(--faint)':proj.color}">${proj.emoji} ${proj.name} ${durationBadge}</div>
           ${notePreview?`<div class="tl-note-preview">${notePreview}</div>`:''}
@@ -2991,6 +3162,8 @@ function renderTimeline() {
         </div>
       </div>`;
     list.appendChild(block);
+    block.style.cursor = 'pointer';
+    block.onclick = () => { if (isActive) { showBlockFocus(idx); } else { openNotesModal(idx); } };
     block.querySelector('[data-nb]')?.addEventListener('click', e => {
       e.stopPropagation();
       openNotesModal(idx);
@@ -3022,17 +3195,8 @@ function renderTimeline() {
       renderSidebar();
     });
   });
-  if (isToday() && !nowInserted && entries.length) {
-    const nowEl = document.createElement('div');
-    nowEl.className = 'tl-now-marker';
-    const now = new Date(),
-      hr = now.getHours() % 12 || 12,
-      mn = String(now.getMinutes()).padStart(2, '0'),
-      ap = now.getHours() < 12 ? 'AM' : 'PM';
-    nowEl.innerHTML = `<div class="tl-now-dot"></div><div class="tl-now-line"></div><div class="tl-now-label">NOW · ${hr}:${mn} ${ap}</div>`;
-    list.appendChild(nowEl);
-  }
 }
+
 
 // ════════════════════════════════════════════════════════════
 //  RENDER: STATS TAB
@@ -3179,7 +3343,7 @@ function computeMomentumAtDay(ds) {
   let m = 100;
   for (const d of allDays) {
     const done = (state.days[d].completed || []).length;
-    if (done >= dailyGoal()) m = Math.min(100, m + 5);
+    if (done >= dailyGoalForDay(d)) m = Math.min(100, m + 5);
     else m = Math.max(0, m - 10);
   }
   return Math.round(m);
@@ -3597,6 +3761,7 @@ document.addEventListener('DOMContentLoaded', () => {
     ensureForwardDays();
     restoreTimerState(); // restore timer before rendering so activeBlock/focusBlock are set
     renderAll();
+    updateNotifEnableRow();
     startClockTick();
     // If timer was restored and focus block is set, switch to Today and show focus view
     if (ui.timerRunning && ui.focusBlock !== null) {
@@ -3606,6 +3771,17 @@ document.addEventListener('DOMContentLoaded', () => {
   })();
 
   document.querySelectorAll('.tab-btn').forEach(btn => btn.addEventListener('click', () => switchTab(btn.dataset.tab)));
+
+  // Momentum tooltip toggle
+  const momentumBtn = document.getElementById('momentum-info-btn');
+  const momentumTooltip = document.getElementById('momentum-tooltip');
+  if (momentumBtn && momentumTooltip) {
+    momentumBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      momentumTooltip.classList.toggle('visible');
+    });
+    document.addEventListener('click', () => momentumTooltip.classList.remove('visible'));
+  }
 
   document.getElementById('nav-prev').addEventListener('click', () => {
     const days = [todayStr(), ...sortedDays()].filter((v, i, a) => a.indexOf(v) === i).sort().reverse();
@@ -3645,11 +3821,34 @@ document.addEventListener('DOMContentLoaded', () => {
   // Goal input
   document.getElementById('goal-input').addEventListener('change', e => {
     const v = Math.max(1, Math.min(36, +e.target.value || 8));
+    const oldGoal = dailyGoal();
+    // Freeze all existing days that don't have an explicit goal so the global
+    // change doesn't retroactively alter their stats calculation
+    Object.keys(state.days).forEach(ds => {
+      if (!state.days[ds].dailyGoal) state.days[ds].dailyGoal = oldGoal;
+    });
+    // Store new goal on current day
+    const day = currentDayData();
+    day.dailyGoal = v;
+    setDay(ui.currentDate, day);
+    // Update global default so future days inherit the new value
     state.settings.dailyGoal = v;
     e.target.value = v;
     save();
     renderHeaderStats();
     if (ui.tab === 'today') renderGamePanel();
+  });
+
+  // Default block duration toggle
+  document.getElementById('dur-btn-30').addEventListener('click', () => {
+    state.settings.defaultBlockDuration = 30;
+    save();
+    renderSidebar();
+  });
+  document.getElementById('dur-btn-60').addEventListener('click', () => {
+    state.settings.defaultBlockDuration = 60;
+    save();
+    renderSidebar();
   });
 
   // Time-off toggle
@@ -3687,11 +3886,6 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('notes-overlay').addEventListener('click', e => {
     if (e.target === document.getElementById('notes-overlay')) closeNotesModal();
   });
-  document.getElementById('add-todo-btn').addEventListener('click', addTodoItem);
-  document.getElementById('new-todo-input').addEventListener('keydown', e => {
-    if (e.key === 'Enter') addTodoItem();
-  });
-
   // Export/Import
   document.getElementById('export-btn').addEventListener('click', exportYaml);
   document.getElementById('export-notes-md-btn').addEventListener('click', () => {

@@ -68,6 +68,13 @@
       <div id="goal-label">DAILY GOAL (blocks)</div>
       <input type="number" id="goal-input" min="1" max="36" value="8">
     </div>
+    <div id="default-block-row">
+      <div id="default-block-label">DEFAULT BLOCK</div>
+      <div id="default-block-toggle">
+        <button class="dur-toggle-btn active" id="dur-btn-30">30m</button>
+        <button class="dur-toggle-btn" id="dur-btn-60">1hr</button>
+      </div>
+    </div>
     <div class="section-label" style="margin-bottom:8px">Today by project</div>
     <div id="proj-stat-list"></div>
     <div id="timeoff-row">
@@ -112,6 +119,9 @@
         <div class="timer-controls" id="timer-controls">
           <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--faint)">Start a block →</span>
         </div>
+        <div id="notif-enable-row" style="display:none;margin-top:8px">
+          <button id="notif-enable-btn" onclick="enableNotifications()">🔔 Enable Notifications</button>
+        </div>
         <hr id="timer-divider">
         <div class="timer-stat">
           <div class="timer-stat-item"><div class="timer-stat-val" id="t-blocks">0</div><div class="timer-stat-lbl">DONE</div></div>
@@ -146,20 +156,40 @@
           </div>
           <div class="game-bar-track"><div class="game-bar-fill" id="gb-rate" style="background:var(--green)"></div></div>
         </div>
-        <!-- Decay stat -->
+        <!-- Project todos today -->
+        <div class="game-stat">
+          <div class="game-stat-row">
+            <span class="game-stat-label">PROJECT TODOS</span>
+            <span class="game-stat-val" id="gv-proj-todos" style="color:var(--gold)">0/0</span>
+          </div>
+          <div class="game-bar-track"><div class="game-bar-fill" id="gb-proj-todos" style="background:var(--gold)"></div></div>
+        </div>
+        <!-- Best day + Avg inline -->
+        <div class="game-stat-inline-row">
+          <div class="game-stat-inline">
+            <span class="game-stat-label">BEST DAY</span>
+            <span class="game-stat-val" id="gv-best" style="color:var(--orange)">0</span>
+          </div>
+          <div class="game-stat-inline">
+            <span class="game-stat-label">AVG / DAY</span>
+            <span class="game-stat-val" id="gv-avg" style="color:var(--muted)">0.0</span>
+          </div>
+        </div>
+        <!-- Momentum at bottom -->
         <div id="decay-stat">
           <div id="decay-label-row">
             <span class="game-stat-label">MOMENTUM</span>
             <span class="game-stat-val" id="gv-decay" style="color:var(--purple)">100</span>
+            <span class="momentum-info-btn" id="momentum-info-btn" title="How momentum works">ⓘ</span>
+            <div class="momentum-tooltip" id="momentum-tooltip">
+              Fades each day without hitting your goal.<br>
+              Goal met: <span style="color:var(--green)">+5</span> · Goal missed: <span style="color:var(--red)">−10</span><br>
+              Weekdays only · Max 100
+            </div>
           </div>
           <div class="game-bar-track"><div id="decay-bar-fill" class="game-bar-fill" style="background:var(--purple);width:100%"></div></div>
-          <div style="font-family:'DM Mono',monospace;font-size:8px;color:var(--faint);margin-top:3px" id="decay-hint">Fades each day without hitting your goal</div>
-          <div style="font-family:'DM Mono',monospace;font-size:8px;color:var(--faint);margin-top:2px;line-height:1.6">Goal met: <span style="color:var(--green)">+5</span> · Goal missed: <span style="color:var(--red)">−10</span> · Weekdays only · Max 100</div>
         </div>
       </div>
-      <!-- Mini schedule list -->
-      <div id="today-dayflow-label">Schedule</div>
-      <div class="dayflow-mini" id="dayflow-mini"></div>
     </div>
     <!-- Block Focus View (shown when a block is active) -->
     <div id="block-focus-view">
@@ -196,14 +226,6 @@
           <span id="focus-save-status" style="font-family:'DM Mono',monospace;font-size:10px;color:var(--green);opacity:0;transition:opacity .3s"></span>
         </div>
       </div>
-      <div class="block-focus-section">
-        <div class="block-focus-section-label">To-dos</div>
-        <div id="block-focus-todo-list"></div>
-        <div id="block-focus-add-todo-row">
-          <input id="block-focus-new-todo" type="text" placeholder="Add a to-do…">
-          <button id="block-focus-add-todo-btn">+ Add</button>
-        </div>
-      </div>
       <div class="block-focus-section" id="block-focus-proj-todos-section" style="display:none">
         <div class="block-focus-section-label" style="display:flex;align-items:center;justify-content:space-between">
           <span>Project Todos</span>
@@ -214,6 +236,10 @@
           <input id="block-focus-new-proj-todo" type="text" placeholder="Add a project todo…">
           <button id="block-focus-add-proj-todo-btn">+ Add</button>
         </div>
+      </div>
+      <div class="block-focus-section" id="block-focus-recent-notes-section" style="display:none">
+        <div class="block-focus-section-label">Recent Notes</div>
+        <div id="block-focus-recent-notes-list"></div>
       </div>
     </div>
     <!-- Timeline -->
@@ -342,12 +368,6 @@
         <textarea id="notes-textarea" placeholder="Context, goals, or anything for this block… (supports **markdown**)"></textarea>
         <div id="notes-md-preview" style="display:none;background:var(--bg);border:1px solid var(--border2);color:var(--text);font-family:Georgia,serif;font-size:11px;border-radius:8px;padding:9px 11px;min-height:82px;line-height:1.7;cursor:pointer"></div>
       </div>
-      <div class="notes-section-label notes-gap">To-do list</div>
-      <div id="todo-list"></div>
-      <div id="add-todo-row">
-        <input id="new-todo-input" type="text" placeholder="Add a to-do item…">
-        <button id="add-todo-btn">+ Add</button>
-      </div>
       <div id="block-proj-todos-section" style="display:none">
         <div class="notes-section-label notes-gap" style="display:flex;align-items:center;justify-content:space-between">
           <span>Project Todos</span>
@@ -361,6 +381,20 @@
       <button class="btn-ghost" id="notes-cancel-btn">Cancel</button>
     </div>
   </div>
+</div>
+
+<!-- Block Complete Popup -->
+<div id="block-complete-popup">
+  <div id="bcp-header">
+    <div id="bcp-proj-name"></div>
+    <div id="bcp-label">block complete</div>
+  </div>
+  <div id="bcp-actions">
+    <button id="bcp-extend-btn" style="display:none">+30m Extend</button>
+    <button id="bcp-next-btn">▶ Start Next</button>
+    <button id="bcp-dismiss-btn">✕ Dismiss</button>
+  </div>
+  <button id="bcp-sound-btn">🔇 Stop Sound</button>
 </div>
 
 <script src="day-planner.js"></script>
