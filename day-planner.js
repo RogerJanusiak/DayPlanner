@@ -65,9 +65,10 @@ let ui = {
   notesDate: null,
   dragSrcIdx: null, // block-to-block drag
   dragProjId: null, // project-from-sidebar drag
-  openProjTodosId: null, // which project todos group is expanded
+  openProjTodosIds: null, // Set of expanded project todo group ids (null = all open)
   notesTabProjId: null, // selected project in Notes tab
   notesTabImportanceFilter: 0, // 0=All, 1-5=exact star rating
+  notesTabTagFilter: [], // [] = All, else array of selected tag IDs
   focusBlock: null, // block idx shown in focus view
   notesLivePreview: true,
   soundMuted: false,
@@ -123,9 +124,11 @@ function currentDayData() {
 }
 
 const BREAK_PROJ = { id: '__break__', name: 'Break', emoji: '☕', color: 'var(--muted)' };
+const ARCHIVED_PROJ = { id: '__archived__', name: 'Archived', emoji: '🗃', color: 'var(--faint)' };
 
 function getProject(id) {
   if (id === '__break__') return BREAK_PROJ;
+  if (id === '__archived__') return ARCHIVED_PROJ;
   return state.projects.find(p => p.id === id);
 }
 
@@ -161,6 +164,25 @@ function currentHourFrac() {
   return n.getHours() + n.getMinutes() / 60
 }
 
+// Count completed blocks as visual units (1-hour block = 1, not 2)
+// Count done blocks the way the user sees them: each 1h block counts as 2.
+// We iterate completed start-slots (skipping spanned continuation slots) and
+// add the block's span, so a 1h start with span=2 contributes 2 even if its
+// second slot is absent from completed (historical data inconsistency).
+function countDoneBlocks(day) {
+  const spans = day.blockSpan || {};
+  const spanned = new Set();
+  Object.entries(spans).forEach(([si, span]) => {
+    for (let i = 1; i < span; i++) spanned.add(+si + i);
+  });
+  let count = 0;
+  for (const idx of (day.completed || [])) {
+    if (spanned.has(idx)) continue;
+    count += spans[idx] || 1;
+  }
+  return count;
+}
+
 function dailyGoal() {
   return Math.max(1, +(state.settings.dailyGoal) || 8)
 }
@@ -174,36 +196,40 @@ function dailyGoalForDay(ds) {
 //  STREAK (weekends & time-off aware)
 // ════════════════════════════════════════════════════════════
 function computeStreak() {
-  // Walk backwards from today. Skip weekends and time-off days.
-  // A weekday that isn't time-off must have completed >= 1 block (or meet goal).
-  let streak = 0,
-    d = new Date();
-  // Don't penalise today if it hasn't ended yet — only count it if goal met
+  // Count consecutive days (any day of week) with >= 1 completed block.
+  // Time-off days are skipped (don't count, don't break).
+  // Empty weekends are also skipped (don't break if you just didn't work).
+  // Today counts if it already has >= 1 block done.
+  let streak = 0;
+  const d = new Date();
   const today = todayStr();
+
+  // Check today first — counts if it has blocks (even on time-off), doesn't break if it doesn't
   const todayData = state.days[today];
-  const todayDone = (todayData?.completed || []).length;
-  const todayTimeOff = todayData?.timeOff || false;
-  // Check today
-  if (!isWeekend(today)) {
-    if (todayTimeOff || todayDone >= 1) streak = 1;
-    // If today is unfinished weekday with 0 done, streak may still be built from yesterday
-    // We allow today's streak to be 0 and still show yesterday's streak
-  }
+  if (countDoneBlocks(todayData || {}) >= 1) streak = 1;
+
   // Walk backward from yesterday
   d.setDate(d.getDate() - 1);
   while (true) {
     const ds = d.toISOString().slice(0, 10);
-    if (isWeekend(ds)) {
-      d.setDate(d.getDate() - 1);
-      continue
-    }
     const data = state.days[ds];
-    const done = (data?.completed || []).length;
     const off = data?.timeOff || false;
-    if (off || done >= 1) {
+    const done = countDoneBlocks(data || {});
+
+    if (done >= 1) {
+      // Has blocks (even on time-off) — counts toward streak
       streak++;
       d.setDate(d.getDate() - 1);
-    } else break;
+    } else if (off) {
+      // Time-off with no blocks: skip silently
+      d.setDate(d.getDate() - 1);
+      continue;
+    } else if (isWeekend(ds)) {
+      // Empty weekend: skip silently (don't penalize for not working weekends)
+      d.setDate(d.getDate() - 1);
+    } else {
+      break; // Weekday with 0 blocks — streak ends
+    }
   }
   return streak;
 }
@@ -214,7 +240,7 @@ function computeMomentum() {
   const days = Object.keys(state.days).filter(ds => !isWeekend(ds) && !state.days[ds]?.timeOff).sort();
   let m = 100;
   for (const ds of days) {
-    const done = (state.days[ds].completed || []).length;
+    const done = countDoneBlocks(state.days[ds]);
     if (done >= dailyGoalForDay(ds)) m = Math.min(100, m + 5);
     else m = Math.max(0, m - 10);
   }
@@ -224,14 +250,14 @@ function computeMomentum() {
 function computeStats() {
   // Only non-timeoff weekdays count for streak
   const allDays = Object.entries(state.days);
-  const activeDays = allDays.filter(([ds, d]) => !d.timeOff && (d.completed || []).length > 0);
-  const total = activeDays.reduce((s, [, d]) => s + (d.completed || []).length, 0);
+  const activeDays = allDays.filter(([ds, d]) => !d.timeOff && countDoneBlocks(d) > 0);
+  const total = activeDays.reduce((s, [, d]) => s + countDoneBlocks(d), 0);
   const avg = activeDays.length ? (total / activeDays.length).toFixed(1) : '0.0';
-  const best = activeDays.length ? Math.max(...activeDays.map(([, d]) => (d.completed || []).length)) : 0;
+  const best = activeDays.length ? Math.max(...activeDays.map(([, d]) => countDoneBlocks(d))) : 0;
   const streak = computeStreak();
   // completion rate: goals hit / total weekday work days
   const weekdayWorkDays = allDays.filter(([ds, d]) => !isWeekend(ds) && !d.timeOff);
-  const goalsMet = weekdayWorkDays.filter(([ds, d]) => (d.completed || []).length >= dailyGoalForDay(ds)).length;
+  const goalsMet = weekdayWorkDays.filter(([ds, d]) => countDoneBlocks(d) >= dailyGoalForDay(ds)).length;
   const rate = weekdayWorkDays.length ? Math.round(goalsMet / weekdayWorkDays.length * 100) : 0;
   return {
     total,
@@ -322,6 +348,14 @@ function load() {
     defaultBlockDuration: 30
   };
   if (!state.settings.defaultBlockDuration) state.settings.defaultBlockDuration = 30;
+  if (state.settings.todosDefaultOpen === undefined) state.settings.todosDefaultOpen = true;
+  if (!state.settings.tags) state.settings.tags = [
+    {id:'t1', color:'#E55555', name:''},
+    {id:'t2', color:'#E8A838', name:''},
+    {id:'t3', color:'#5CB85C', name:''},
+    {id:'t4', color:'#5B9BD5', name:''},
+    {id:'t5', color:'#9B6FD4', name:''},
+  ];
   if (!state.projectTodos) state.projectTodos = {};
   Object.keys(state.days).forEach(ds => {
     if (!state.days[ds].blockNotes) state.days[ds].blockNotes = {};
@@ -878,22 +912,41 @@ function requestNotifPermission() {
   updateNotifEnableRow();
 }
 
-function testNotification() {
-  if (!('Notification' in window)) {
-    fireTimerNotification({ emoji: '🧪', name: 'Test Block' }, -1);
+let _testTimerInterval = null;
+let _testTimerSecs = 0;
+
+function startTestTimer() {
+  const btn = document.getElementById('notif-test-btn');
+  if (_testTimerInterval) {
+    clearInterval(_testTimerInterval);
+    _testTimerInterval = null;
+    if (btn) btn.textContent = '🧪 Test notification (1 min)';
     return;
   }
-  if (Notification.permission === 'granted') {
-    fireTimerNotification({ emoji: '🧪', name: 'Test Block' }, -1);
-  } else if (Notification.permission === 'denied') {
-    alert('Notifications are blocked for this site.\n\nTo enable:\n• Chrome: click the 🔒 icon in the address bar → Site settings → Notifications → Allow\n• Safari: Safari menu → Settings → Websites → Notifications → find this site → Allow');
-  } else {
-    // 'default' — request permission directly from this click, then fire
-    Notification.requestPermission().then(perm => {
-      updateNotifEnableRow();
-      if (perm === 'granted') fireTimerNotification({ emoji: '🧪', name: 'Test Block' }, -1);
-    });
-  }
+  const fire = () => {
+    if (!('Notification' in window) || Notification.permission === 'granted') {
+      fireTimerNotification({ emoji: '🧪', name: 'Test Block' }, -1);
+    } else if (Notification.permission === 'denied') {
+      alert('Notifications are blocked for this site.\n\nTo enable:\n• Chrome: click the 🔒 icon in the address bar → Site settings → Notifications → Allow\n• Safari: Safari menu → Settings → Websites → Notifications → find this site → Allow');
+    } else {
+      Notification.requestPermission().then(perm => {
+        updateNotifEnableRow();
+        if (perm === 'granted') fireTimerNotification({ emoji: '🧪', name: 'Test Block' }, -1);
+      });
+    }
+  };
+  _testTimerSecs = 60;
+  if (btn) btn.textContent = `🧪 Cancel (${_testTimerSecs}s)`;
+  _testTimerInterval = setInterval(() => {
+    _testTimerSecs--;
+    if (btn) btn.textContent = `🧪 Cancel (${_testTimerSecs}s)`;
+    if (_testTimerSecs <= 0) {
+      clearInterval(_testTimerInterval);
+      _testTimerInterval = null;
+      if (btn) btn.textContent = '🧪 Test notification (1 min)';
+      fire();
+    }
+  }, 1000);
 }
 
 let _soundCtx = null;
@@ -902,18 +955,25 @@ let _soundInterval = null;
 function _playChime() {
   try {
     const ctx = _soundCtx || (_soundCtx = new (window.AudioContext || window.webkitAudioContext)());
-    [[0, 523], [0.18, 659], [0.36, 784]].forEach(([t, freq]) => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.type = 'sine';
-      osc.frequency.value = freq;
-      gain.gain.setValueAtTime(0.28, ctx.currentTime + t);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + t + 0.55);
-      osc.start(ctx.currentTime + t);
-      osc.stop(ctx.currentTime + t + 0.55);
-    });
+    const play = () => {
+      [[0, 523], [0.18, 659], [0.36, 784]].forEach(([t, freq]) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.type = 'sine';
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0.28, ctx.currentTime + t);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + t + 0.55);
+        osc.start(ctx.currentTime + t);
+        osc.stop(ctx.currentTime + t + 0.55);
+      });
+    };
+    if (ctx.state === 'suspended') {
+      ctx.resume().then(play);
+    } else {
+      play();
+    }
   } catch (e) {}
 }
 
@@ -966,6 +1026,15 @@ function fireTimerNotification(proj, completedIdx) {
       body: projName ? `${projName} — block finished!` : 'Your block is finished!',
     });
   }
+  // Trigger native macOS notification with sound (works even when tab is unfocused)
+  fetch('/notify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      title: 'Block Complete',
+      message: projName ? `${projName} — block finished!` : 'Your block is finished!'
+    })
+  }).catch(() => {});
   playCompletionSound();
   showBlockCompletePopup(proj, completedIdx);
 }
@@ -1045,6 +1114,13 @@ function pauseResumeTimer() {
   renderTimerCard();
 }
 
+function skipToFifteenSeconds() {
+  if (ui.activeBlock === null) return;
+  const dur = getBlockDuration(ui.activeBlock);
+  ui.timerElapsedMs = (dur - 15) * 1000;
+  if (ui.timerRunning) ui.timerStartedAt = Date.now();
+}
+
 function doneTimer() {
   if (ui.activeBlock !== null) completeBlock(ui.activeBlock);
   clearInterval(ui.timerInterval);
@@ -1090,6 +1166,68 @@ function completeBlock(idx) {
   }
 }
 
+// Shift all blocks from `fromIdx` onwards forward by one 30-min slot.
+// Blocks that would overflow past slot 35 are silently dropped.
+function shiftBlocksForward(day, fromIdx) {
+  if (!day.schedule) day.schedule = {};
+  if (!day.blockSpan) day.blockSpan = {};
+  if (!day.blockNotes) day.blockNotes = {};
+  for (let i = 35; i >= fromIdx; i--) {
+    const dest = i + 1;
+    if (dest <= 35) {
+      if (day.schedule[i] !== undefined) day.schedule[dest] = day.schedule[i];
+      if (day.blockSpan[i] !== undefined) day.blockSpan[dest] = day.blockSpan[i];
+      if (day.blockNotes[i] !== undefined) day.blockNotes[dest] = day.blockNotes[i];
+    }
+    delete day.schedule[i];
+    delete day.blockSpan[i];
+    delete day.blockNotes[i];
+  }
+  day.completed = (day.completed || []).map(i => i >= fromIdx ? Math.min(i + 1, 35) : i);
+}
+
+// Shift all blocks from `fromIdx` onwards backward by one 30-min slot.
+function shiftBlocksBackward(day, fromIdx) {
+  if (fromIdx > 35) return;
+  if (!day.schedule) return;
+  if (!day.blockSpan) day.blockSpan = {};
+  if (!day.blockNotes) day.blockNotes = {};
+  for (let i = fromIdx; i <= 35; i++) {
+    const src = i + 1;
+    if (src <= 35) {
+      if (day.schedule[src] !== undefined) day.schedule[i] = day.schedule[src]; else delete day.schedule[i];
+      if (day.blockSpan[src] !== undefined) day.blockSpan[i] = day.blockSpan[src]; else delete day.blockSpan[i];
+      if (day.blockNotes[src] !== undefined) day.blockNotes[i] = day.blockNotes[src]; else delete day.blockNotes[i];
+    } else {
+      delete day.schedule[i];
+      delete day.blockSpan[i];
+      delete day.blockNotes[i];
+    }
+  }
+  day.completed = (day.completed || []).map(i => i >= fromIdx ? i - 1 : i);
+}
+
+// Shrink a 1-hour block back to 30 minutes, shifting later blocks back to fill the gap.
+function shrinkBlock(blockIdx) {
+  const day = currentDayData();
+  if (!day.blockSpan) day.blockSpan = {};
+  const span = day.blockSpan[blockIdx] || 1;
+  if (span < 2) return;
+  delete day.blockSpan[blockIdx];
+  day.completed = (day.completed || []).filter(i => i !== blockIdx + 1);
+  shiftBlocksBackward(day, blockIdx + 1);
+  if (ui.activeBlock === blockIdx) {
+    ui.timerElapsedMs = Math.min(ui.timerElapsedMs, 29 * 60 * 1000);
+  }
+  setDay(ui.currentDate, day);
+  save();
+  renderScheduleGrid();
+  renderSidebar();
+  renderTodayTab();
+  renderHeaderStats();
+  renderBlockFocus();
+}
+
 // Extend a currently-running 30-min block to 1 hour.
 // Called from focus screen while timer is running.
 function extendBlock(blockIdx) {
@@ -1099,17 +1237,16 @@ function extendBlock(blockIdx) {
   if (blockIdx + 1 > 35) { alert('Not enough room to extend this block.'); return; }
   const projId = (day.schedule || {})[blockIdx];
   if (!projId) return;
-  const nextOccupied = day.schedule[blockIdx + 1];
-  if (nextOccupied && nextOccupied !== projId) {
-    if (!confirm('The next 30-minute slot is occupied. Remove it to extend this block?')) return;
-  }
   if (!day.blockSpan) day.blockSpan = {};
-  // Clear the next slot
+  // If the next slot has a different project, push everything back to make room
+  if (day.schedule[blockIdx + 1] && day.schedule[blockIdx + 1] !== projId) {
+    shiftBlocksForward(day, blockIdx + 1);
+  }
+  // Clear the next slot and set this block to 1-hour span
   delete day.schedule[blockIdx + 1];
-  day.completed = day.completed.filter(i => i !== blockIdx + 1);
+  day.completed = (day.completed || []).filter(i => i !== blockIdx + 1);
   if (day.blockNotes) delete day.blockNotes[blockIdx + 1];
   delete day.blockSpan[blockIdx + 1];
-  // Set this block to 1-hour span
   day.schedule[blockIdx + 1] = projId;
   day.blockSpan[blockIdx] = 2;
   setDay(ui.currentDate, day);
@@ -1131,11 +1268,11 @@ function extendBlockFromAlarm(completedIdx) {
   if (completedIdx + 1 > 35) { alert('Not enough room to extend this block.'); return; }
   const projId = (day.schedule || {})[completedIdx];
   if (!projId) return;
-  const nextOccupied = day.schedule[completedIdx + 1];
-  if (nextOccupied && nextOccupied !== projId) {
-    if (!confirm('The next 30-minute slot is occupied. Remove it to extend this block?')) return;
-  }
   if (!day.blockSpan) day.blockSpan = {};
+  // If the next slot has a different project, push everything back to make room
+  if (day.schedule[completedIdx + 1] && day.schedule[completedIdx + 1] !== projId) {
+    shiftBlocksForward(day, completedIdx + 1);
+  }
   // Expand to 1-hour block
   delete day.schedule[completedIdx + 1];
   day.completed = day.completed.filter(i => i !== completedIdx && i !== completedIdx + 1);
@@ -1189,18 +1326,9 @@ function assignBlock1hr(blockIdx, projId) {
     alert('Not enough space for a 1-hour block at this time.');
     return;
   }
-  // Check if the next block is occupied
-  const nextBlockOccupied = day.schedule[blockIdx + 1];
-  if (nextBlockOccupied) {
-    // Ask if user wants to delete the next block
-    if (!confirm('The next 30-minute slot is occupied. Delete it to make room for this 1-hour block?')) {
-      return;
-    }
-    // Delete the next block if it exists and user confirms
-    delete day.schedule[blockIdx + 1];
-    day.completed = day.completed.filter(i => i !== blockIdx + 1);
-    if (day.blockNotes) delete day.blockNotes[blockIdx + 1];
-    if (day.blockSpan) delete day.blockSpan[blockIdx + 1];
+  // If the next slot is occupied, push everything back to make room
+  if (day.schedule[blockIdx + 1]) {
+    shiftBlocksForward(day, blockIdx + 1);
   }
   day.schedule[blockIdx] = projId;
   day.schedule[blockIdx + 1] = projId;
@@ -1253,26 +1381,64 @@ function clearBlock(blockIdx) {
 function moveBlock(fromIdx, toIdx) {
   if (fromIdx === toIdx) return;
   const day = currentDayData();
-  const sched = day.schedule || {},
-    notes = day.blockNotes || {};
-  const fromProj = sched[fromIdx],
-    toProj = sched[toIdx];
-  if (toProj) sched[fromIdx] = toProj;
-  else delete sched[fromIdx];
-  sched[toIdx] = fromProj;
-  const fromNote = notes[fromIdx],
-    toNote = notes[toIdx];
-  if (fromNote) notes[toIdx] = fromNote;
-  else delete notes[toIdx];
-  if (toNote) notes[fromIdx] = toNote;
-  else delete notes[fromIdx];
-  const fromDone = day.completed.includes(fromIdx),
-    toDone = day.completed.includes(toIdx);
-  day.completed = day.completed.filter(i => i !== fromIdx && i !== toIdx);
-  if (fromDone) day.completed.push(toIdx);
-  if (toDone) day.completed.push(fromIdx);
-  if (ui.activeBlock === fromIdx) ui.activeBlock = toIdx;
-  else if (ui.activeBlock === toIdx) ui.activeBlock = fromIdx;
+  const sched = day.schedule || {};
+  const notes = day.blockNotes || {};
+  if (!day.blockSpan) day.blockSpan = {};
+  const spans = day.blockSpan;
+
+  const fromSpan = spans[fromIdx] || 1;
+
+  if (fromSpan >= 2) {
+    // Moving a 1-hour block — swap both slots with the destination pair
+    if (toIdx + 1 > 35) { alert('Not enough room to move this block here.'); return; }
+
+    const fp0 = sched[fromIdx], fp1 = sched[fromIdx + 1];
+    const fn0 = notes[fromIdx];
+    const fd0 = day.completed.includes(fromIdx);
+
+    const tp0 = sched[toIdx], tp1 = sched[toIdx + 1];
+    const tn0 = notes[toIdx], tn1 = notes[toIdx + 1];
+    const td0 = day.completed.includes(toIdx), td1 = day.completed.includes(toIdx + 1);
+    const toSpan0 = spans[toIdx] || 1;
+
+    // Place 1-hour block at destination
+    sched[toIdx] = fp0; sched[toIdx + 1] = fp1;
+    spans[toIdx] = 2; delete spans[toIdx + 1];
+    if (fn0) notes[toIdx] = fn0; else delete notes[toIdx];
+    delete notes[toIdx + 1];
+
+    // Place destination's content back at source slots
+    if (tp0) sched[fromIdx] = tp0; else delete sched[fromIdx];
+    if (tp1) sched[fromIdx + 1] = tp1; else delete sched[fromIdx + 1];
+    delete spans[fromIdx];
+    if (toSpan0 >= 2) spans[fromIdx] = 2;
+    if (tn0) notes[fromIdx] = tn0; else delete notes[fromIdx];
+    if (tn1) notes[fromIdx + 1] = tn1; else delete notes[fromIdx + 1];
+
+    day.completed = day.completed.filter(i => i !== fromIdx && i !== fromIdx + 1 && i !== toIdx && i !== toIdx + 1);
+    if (fd0) day.completed.push(toIdx);
+    if (td0) day.completed.push(fromIdx);
+    if (td1) day.completed.push(fromIdx + 1);
+
+    if (ui.activeBlock === fromIdx) ui.activeBlock = toIdx;
+    else if (ui.activeBlock === toIdx || ui.activeBlock === toIdx + 1) ui.activeBlock = fromIdx;
+  } else {
+    // 30-min block swap
+    const fromProj = sched[fromIdx], toProj = sched[toIdx];
+    if (toProj) sched[fromIdx] = toProj;
+    else delete sched[fromIdx];
+    sched[toIdx] = fromProj;
+    const fromNote = notes[fromIdx], toNote = notes[toIdx];
+    if (fromNote) notes[toIdx] = fromNote; else delete notes[toIdx];
+    if (toNote) notes[fromIdx] = toNote; else delete notes[fromIdx];
+    const fromDone = day.completed.includes(fromIdx), toDone = day.completed.includes(toIdx);
+    day.completed = day.completed.filter(i => i !== fromIdx && i !== toIdx);
+    if (fromDone) day.completed.push(toIdx);
+    if (toDone) day.completed.push(fromIdx);
+    if (ui.activeBlock === fromIdx) ui.activeBlock = toIdx;
+    else if (ui.activeBlock === toIdx) ui.activeBlock = fromIdx;
+  }
+
   day.schedule = sched;
   day.blockNotes = notes;
   setDay(ui.currentDate, day);
@@ -1324,6 +1490,48 @@ function openNotesModal(blockIdx, ds, notesOnly) {
     };
   });
   document.getElementById('clear-imp-btn').onclick = () => updateStars(0);
+  // Tags
+  const currentTags = ex.tags || [];
+  const tagPicker = document.getElementById('notes-tag-picker');
+  const tagRenameRow = document.getElementById('notes-tag-rename-row');
+  tagPicker.innerHTML = '';
+  tagRenameRow.style.display = 'none';
+  tagRenameRow.innerHTML = '';
+  (state.settings.tags || []).forEach(tag => {
+    const active = currentTags.includes(tag.id);
+    const btn = document.createElement('button');
+    btn.dataset.tagId = tag.id;
+    btn.className = 'tag-pill-btn' + (active ? ' active' : '');
+    btn.style.cssText = `border-color:${tag.color}50;--tag-color:${tag.color}`;
+    btn.innerHTML = `<span style="background:${tag.color}"></span>${tag.name || tag.id}`;
+    btn.onclick = () => btn.classList.toggle('active');
+    tagPicker.appendChild(btn);
+  });
+  let renameOpen = false;
+  document.getElementById('notes-tag-edit-btn').onclick = () => {
+    renameOpen = !renameOpen;
+    if (renameOpen) {
+      tagRenameRow.style.display = 'flex';
+      tagRenameRow.innerHTML = '';
+      (state.settings.tags || []).forEach(tag => {
+        const inp = document.createElement('input');
+        inp.type = 'text';
+        inp.value = tag.name;
+        inp.placeholder = tag.id;
+        inp.className = 'tag-rename-input';
+        inp.style.cssText = `border-color:${tag.color}80;color:${tag.color}`;
+        inp.oninput = () => {
+          tag.name = inp.value;
+          const pill = tagPicker.querySelector(`[data-tag-id="${tag.id}"]`);
+          if (pill) pill.innerHTML = `<span style="background:${tag.color}"></span>${tag.name || tag.id}`;
+          save();
+        };
+        tagRenameRow.appendChild(inp);
+      });
+    } else {
+      tagRenameRow.style.display = 'none';
+    }
+  };
   // Markdown edit/preview setup
   const modal = document.getElementById('notes-modal');
   const textarea = document.getElementById('notes-textarea');
@@ -1401,6 +1609,7 @@ function saveNotesModal() {
     ds = ui.notesDate;
   const note = document.getElementById('notes-textarea').value;
   const importance = [...document.querySelectorAll('#star-picker .star-btn')].filter(b => b.classList.contains('active')).length || null;
+  const tags = [...document.querySelectorAll('#notes-tag-picker .tag-pill-btn.active')].map(b => b.dataset.tagId);
   const day = getDay(ds);
   if (!day.blockNotes) day.blockNotes = {};
   const existingProjTodos = (day.blockNotes[blockIdx] || {}).projTodos || [];
@@ -1408,7 +1617,8 @@ function saveNotesModal() {
     note,
     todos: [],
     projTodos: existingProjTodos,
-    importance
+    importance,
+    tags: tags.length ? tags : undefined
   };
   setDay(ds, day);
   save();
@@ -1529,6 +1739,7 @@ function renderBlockProjTodos(projId, blockIdx, ds) {
           completeProjTodo(projId, t.id, blockIdx, ds2);
           renderBlockProjTodos(projId, blockIdx, ds);
           renderTodayTodos();
+          renderGamePanel();
           if (ui.tab === 'todos') renderTodosTab();
         }
       });
@@ -1536,6 +1747,7 @@ function renderBlockProjTodos(projId, blockIdx, ds) {
         progressProjTodo(projId, t.id, blockIdx, ds2);
         renderBlockProjTodos(projId, blockIdx, ds);
         renderTodayTodos();
+        renderGamePanel();
         if (ui.tab === 'todos') renderTodosTab();
       });
       item.querySelector('.block-proj-todo-unpin').addEventListener('click', () => {
@@ -1592,7 +1804,7 @@ function renderTodosTab() {
     const group = document.createElement('div');
     group.className = 'proj-todos-group';
     const chevron = active.length || done.length ? '›' : '';
-    const isOpen = ui.openProjTodosId === proj.id;
+    const isOpen = ui.openProjTodosIds === null || ui.openProjTodosIds.has(proj.id);
     group.innerHTML = `<div class="proj-todos-header">
       <div class="proj-color-dot" style="background:${proj.color}"></div>
       <div class="proj-todos-name" style="color:${proj.color}">${proj.emoji} ${proj.name}</div>
@@ -1612,7 +1824,11 @@ function renderTodosTab() {
     </div>`;
     const header = group.querySelector('.proj-todos-header');
     header.addEventListener('click', () => {
-      ui.openProjTodosId = isOpen ? null : proj.id;
+      if (ui.openProjTodosIds === null) {
+        ui.openProjTodosIds = new Set(state.projects.map(p => p.id));
+      }
+      if (isOpen) ui.openProjTodosIds.delete(proj.id);
+      else ui.openProjTodosIds.add(proj.id);
       renderTodosTab();
     });
     const itemsEl = group.querySelector('.proj-todos-items');
@@ -1649,7 +1865,7 @@ function renderTodosTab() {
     const doAdd = () => {
       addProjTodo(proj.id, addInput.value);
       addInput.value = '';
-      ui.openProjTodosId = proj.id;
+      if (ui.openProjTodosIds !== null) ui.openProjTodosIds.add(proj.id);
       renderTodosTab();
     };
     addBtn.addEventListener('click', doAdd);
@@ -1947,9 +2163,9 @@ function renderHeaderStats() {
   const day = currentDayData(),
     s = computeStats();
   document.getElementById('stat-planned').textContent = Object.keys(day.schedule || {}).length;
-  document.getElementById('stat-done').textContent = (day.completed || []).length;
-  const goal = dailyGoalForDay(ui.currentDate),
-    done = (day.completed || []).length;
+  const done = countDoneBlocks(day);
+  document.getElementById('stat-done').textContent = done;
+  const goal = dailyGoalForDay(ui.currentDate);
   const pct = goal > 0 ? Math.round(done / goal * 100) : 0;
   document.getElementById('stat-goal-pct').textContent = goal ? `${pct}%` : '—';
   document.getElementById('stat-avg').textContent = s.avg;
@@ -1974,6 +2190,198 @@ function renderDateNav() {
 }
 
 // ════════════════════════════════════════════════════════════
+//  SETTINGS PANEL
+// ════════════════════════════════════════════════════════════
+function openSettings() {
+  renderSettingsPanel();
+  document.getElementById('settings-overlay').classList.add('open');
+}
+
+function closeSettings() {
+  document.getElementById('settings-overlay').classList.remove('open');
+}
+
+function renderSettingsPanel() {
+  const body = document.getElementById('settings-body');
+  body.innerHTML = '';
+
+  // ── Projects ──
+  const projSection = document.createElement('div');
+  projSection.className = 'settings-section';
+  projSection.innerHTML = '<div class="settings-section-title">Projects</div>';
+
+  const projList = document.createElement('div');
+  projList.id = 'settings-proj-list';
+
+  let spDragId = null;
+  function renderProjList() {
+    projList.innerHTML = '';
+    state.projects.forEach(p => {
+      const row = document.createElement('div');
+      row.className = 'settings-proj-row';
+      if (ui.editingProjId === p.id) {
+        row.innerHTML = `<div style="display:flex;gap:6px;align-items:center;width:100%">
+          <input class="mini-input emoji-input" style="width:34px;font-size:13px" value="${escAttr(p.emoji)}" id="sp-ee-${p.id}">
+          <input class="color-input" type="color" value="${p.color}" id="sp-ec-${p.id}">
+          <input class="proj-edit-input" style="flex:1" id="sp-en-${p.id}" value="${escAttr(p.name)}">
+          <button class="icon-btn" id="sp-es-${p.id}">✓</button>
+          <button class="icon-btn" id="sp-ex-${p.id}">✕</button>
+        </div>`;
+        projList.appendChild(row);
+        const nameInp = row.querySelector(`#sp-en-${p.id}`);
+        const emojiInp = row.querySelector(`#sp-ee-${p.id}`);
+        const colorInp = row.querySelector(`#sp-ec-${p.id}`);
+        const saveBtn  = row.querySelector(`#sp-es-${p.id}`);
+        const cancelBtn = row.querySelector(`#sp-ex-${p.id}`);
+        const saveEdit = () => {
+          const name = nameInp.value.trim();
+          if (!name) return;
+          p.name = name;
+          p.emoji = emojiInp.value || p.emoji;
+          p.color = colorInp.value || p.color;
+          ui.editingProjId = null;
+          save();
+          renderAll();
+          renderProjList();
+        };
+        nameInp.addEventListener('keydown', e => {
+          if (e.key === 'Enter') saveEdit();
+          if (e.key === 'Escape') { ui.editingProjId = null; renderProjList(); }
+        });
+        saveBtn.onclick = saveEdit;
+        cancelBtn.onclick = () => { ui.editingProjId = null; renderProjList(); };
+      } else {
+        row.draggable = true;
+        row.dataset.projId = p.id;
+        row.innerHTML = `<span class="sp-drag-handle">⠿</span>
+          <div class="proj-color-dot" style="background:${p.color}"></div>
+          <div class="proj-name-display" style="color:${p.color};flex:1">${p.emoji} ${p.name}</div>
+          <div class="proj-actions" style="opacity:1;display:flex;gap:4px">
+            <button class="icon-btn" data-edit="${p.id}">✎</button>
+            <button class="icon-btn danger" data-del="${p.id}">✕</button>
+          </div>`;
+        projList.appendChild(row);
+        row.addEventListener('dragstart', e => {
+          spDragId = p.id;
+          e.dataTransfer.effectAllowed = 'move';
+          row.classList.add('sp-dragging');
+        });
+        row.addEventListener('dragend', () => {
+          spDragId = null;
+          document.querySelectorAll('.settings-proj-row').forEach(r => r.classList.remove('sp-drag-over', 'sp-dragging'));
+        });
+        row.addEventListener('dragover', e => {
+          if (!spDragId || spDragId === p.id) return;
+          e.preventDefault();
+          document.querySelectorAll('.settings-proj-row').forEach(r => r.classList.remove('sp-drag-over'));
+          row.classList.add('sp-drag-over');
+        });
+        row.addEventListener('drop', e => {
+          e.preventDefault();
+          if (!spDragId || spDragId === p.id) return;
+          const fromIdx = state.projects.findIndex(x => x.id === spDragId);
+          const toIdx = state.projects.findIndex(x => x.id === p.id);
+          if (fromIdx < 0 || toIdx < 0) return;
+          const [moved] = state.projects.splice(fromIdx, 1);
+          state.projects.splice(toIdx, 0, moved);
+          save();
+          renderAll();
+          renderProjList();
+        });
+        row.querySelector('[data-edit]').onclick = () => { ui.editingProjId = p.id; renderProjList(); };
+        row.querySelector('[data-del]').onclick = () => {
+          if (confirm(`Delete "${p.name}"?`)) {
+            const deletedId = p.id;
+            state.projects = state.projects.filter(x => x.id !== deletedId);
+            Object.values(state.days).forEach(day => {
+              const sched = day.schedule || {};
+              Object.keys(sched).forEach(k => { if (sched[k] === deletedId) sched[k] = '__archived__'; });
+            });
+            save();
+            renderAll();
+            renderProjList();
+          }
+        };
+      }
+    });
+
+    // Add project form
+    const addRow = document.createElement('div');
+    addRow.className = 'settings-add-proj';
+    addRow.innerHTML = `<div class="form-row" style="margin-bottom:6px">
+      <input class="mini-input emoji-input" id="sp-new-emoji" type="text" value="⚡" maxlength="2">
+      <input class="color-input" id="sp-new-color" type="color" value="#9B8FCF">
+      <input class="mini-input" id="sp-new-name" type="text" placeholder="New project name…" style="flex:1">
+      <button class="btn-primary" id="sp-confirm-add">Add</button>
+    </div>`;
+    projList.appendChild(addRow);
+    const newNameInp  = addRow.querySelector('#sp-new-name');
+    const newEmojiInp = addRow.querySelector('#sp-new-emoji');
+    const newColorInp = addRow.querySelector('#sp-new-color');
+    const confirmBtn  = addRow.querySelector('#sp-confirm-add');
+    const doAdd = () => {
+      const name = newNameInp.value.trim();
+      if (!name) return;
+      state.projects.push({
+        id: name.toLowerCase().replace(/\s+/g, '-') + '-' + Date.now(),
+        name,
+        emoji: newEmojiInp.value || '⚡',
+        color: newColorInp.value || '#9B8FCF'
+      });
+      save();
+      renderAll();
+      newNameInp.value = '';
+      renderProjList();
+    };
+    confirmBtn.onclick = doAdd;
+    newNameInp.addEventListener('keydown', e => { if (e.key === 'Enter') doAdd(); });
+  }
+
+  renderProjList();
+  projSection.appendChild(projList);
+  body.appendChild(projSection);
+
+  // ── Tags ──
+  const tagSection = document.createElement('div');
+  tagSection.className = 'settings-section';
+  tagSection.innerHTML = '<div class="settings-section-title">Tags</div>';
+  const tagGrid = document.createElement('div');
+  tagGrid.className = 'settings-tag-grid';
+  (state.settings.tags || []).forEach(tag => {
+    const item = document.createElement('div');
+    item.className = 'settings-tag-item';
+    item.innerHTML = `<div class="settings-tag-swatch" style="background:${tag.color}"></div>
+      <input class="tag-rename-input" style="border-color:${tag.color}80;color:${tag.color}" value="${escAttr(tag.name)}" placeholder="Label…">`;
+    const inp = item.querySelector('input');
+    inp.oninput = () => { tag.name = inp.value; save(); };
+    tagGrid.appendChild(item);
+  });
+  tagSection.appendChild(tagGrid);
+  body.appendChild(tagSection);
+
+  // ── Preferences ──
+  const prefSection = document.createElement('div');
+  prefSection.className = 'settings-section';
+  prefSection.innerHTML = '<div class="settings-section-title">Preferences</div>';
+  const todoPref = document.createElement('div');
+  todoPref.className = 'settings-pref-row';
+  const todosOpen = state.settings.todosDefaultOpen !== false;
+  todoPref.innerHTML = `<div class="settings-pref-label">
+    <div class="settings-pref-name">Project todos open by default</div>
+    <div class="settings-pref-desc">When you visit the Todos tab, all project sections start expanded</div>
+  </div>
+  <button class="toggle-btn${todosOpen ? ' on' : ''}" id="sp-todos-open-btn">${todosOpen ? 'ON' : 'OFF'}</button>`;
+  todoPref.querySelector('#sp-todos-open-btn').onclick = function() {
+    state.settings.todosDefaultOpen = !state.settings.todosDefaultOpen;
+    save();
+    this.textContent = state.settings.todosDefaultOpen ? 'ON' : 'OFF';
+    this.classList.toggle('on', state.settings.todosDefaultOpen);
+  };
+  prefSection.appendChild(todoPref);
+  body.appendChild(prefSection);
+}
+
+// ════════════════════════════════════════════════════════════
 //  RENDER: SIDEBAR
 // ════════════════════════════════════════════════════════════
 function renderSidebar() {
@@ -1983,84 +2391,69 @@ function renderSidebar() {
     const row = document.createElement('div');
     row.className = 'proj-row';
     row.style.background = p.color + '18';
-    if (ui.editingProjId === p.id) {
-      row.style.cursor = 'default';
-      row.innerHTML = `<div style="display:flex;gap:4px;align-items:center;width:100%">
-        <input class="mini-input emoji-input" style="width:32px;padding:2px;font-size:13px" value="${escAttr(p.emoji)}" id="ee-${p.id}">
-        <input class="color-input" type="color" value="${p.color}" id="ec-${p.id}">
-        <input class="proj-edit-input" id="en-${p.id}" value="${escAttr(p.name)}">
-        <button class="icon-btn" id="es-${p.id}">✓</button>
-        <button class="icon-btn" id="ex2-${p.id}">✕</button></div>`;
-      list.appendChild(row);
-      document.getElementById(`en-${p.id}`).addEventListener('keydown', e => {
-        if (e.key === 'Enter') saveEditProject(p.id);
-        if (e.key === 'Escape') {
-          ui.editingProjId = null;
-          renderSidebar();
-        }
-      });
-      document.getElementById(`es-${p.id}`).onclick = () => saveEditProject(p.id);
-      document.getElementById(`ex2-${p.id}`).onclick = () => {
-        ui.editingProjId = null;
-        renderSidebar();
-      };
-    } else {
-      row.draggable = true;
-      row.innerHTML = `<div class="proj-color-dot" style="background:${p.color}"></div>
-        <div class="proj-name-display" style="color:${p.color}">${p.emoji} ${p.name}</div>
-        <div class="proj-actions" style="opacity:0">
-          <button class="icon-btn" data-edit="${p.id}">✎</button>
-          <button class="icon-btn danger" data-del="${p.id}">✕</button></div>`;
-      list.appendChild(row);
-      row.querySelector('[data-edit]').onclick = e => {
-        e.stopPropagation();
-        ui.editingProjId = p.id;
-        renderSidebar();
-      };
-      row.querySelector('[data-del]').onclick = e => {
-        e.stopPropagation();
-        if (confirm(`Delete "${p.name}"?`)) {
-          state.projects = state.projects.filter(x => x.id !== p.id);
-          save();
-          renderAll();
-        }
-      };
-      // drag from sidebar onto schedule
-      row.addEventListener('dragstart', e => {
-        ui.dragProjId = p.id;
-        ui.dragSrcIdx = null;
-        row.classList.add('proj-dragging');
-        e.dataTransfer.effectAllowed = 'copy';
-        e.dataTransfer.setData('proj', p.id);
-      });
-      row.addEventListener('dragend', () => {
-        row.classList.remove('proj-dragging');
-        ui.dragProjId = null;
-      });
-    }
+    row.draggable = true;
+    row.innerHTML = `<div class="proj-color-dot" style="background:${p.color}"></div>
+      <div class="proj-name-display" style="color:${p.color}">${p.emoji} ${p.name}</div>`;
+    list.appendChild(row);
+    row.addEventListener('dragstart', e => {
+      ui.dragProjId = p.id;
+      ui.dragSrcIdx = null;
+      row.classList.add('proj-dragging');
+      e.dataTransfer.effectAllowed = 'copy';
+      e.dataTransfer.setData('proj', p.id);
+    });
+    row.addEventListener('dragend', () => {
+      row.classList.remove('proj-dragging');
+      ui.dragProjId = null;
+    });
   });
+  // By project stats for current plan date
+  const statList = document.getElementById('proj-stat-list');
+  if (statList) {
+    statList.innerHTML = '';
+    const planDay = getDay(ui.currentDate);
+    const planSched = planDay.schedule || {}, planDoneSet = new Set(planDay.completed || []);
+    const projStats = [...state.projects, ARCHIVED_PROJ]
+      .map(p => ({
+        p,
+        planned: Object.values(planSched).filter(id => id === p.id).length,
+        completed: Object.entries(planSched).filter(([i, id]) => id === p.id && planDoneSet.has(+i)).length
+      }))
+      .filter(x => x.planned > 0);
+    if (projStats.length) {
+      const totalPlanned = projStats.reduce((s, x) => s + x.planned, 0);
+      const bar = document.createElement('div');
+      bar.className = 'stacked-bar';
+      projStats.forEach(({ p, planned, completed }) => {
+        const pct = totalPlanned > 0 ? (planned / totalPlanned * 100) : 0;
+        const compPct = planned > 0 ? (completed / planned * 100) : 0;
+        const seg = document.createElement('div');
+        seg.className = 'stacked-bar-seg';
+        seg.style.cssText = `width:${pct}%;background:${p.color}30;position:relative;overflow:hidden`;
+        seg.title = `${p.emoji} ${p.name}: ${completed}/${planned}`;
+        const fill = document.createElement('div');
+        fill.style.cssText = `position:absolute;left:0;top:0;height:100%;width:${compPct}%;background:${p.color}`;
+        seg.appendChild(fill);
+        bar.appendChild(seg);
+      });
+      statList.appendChild(bar);
+      const legend = document.createElement('div');
+      legend.className = 'stacked-bar-legend';
+      projStats.forEach(({ p, planned, completed }) => {
+        const item = document.createElement('div');
+        item.className = 'stacked-bar-legend-item';
+        item.innerHTML = `<span class="stacked-bar-legend-dot" style="background:${p.color}"></span><span style="color:${p.color}">${p.emoji} ${p.name}</span><span class="stacked-bar-legend-pct">${completed}/${planned}</span>`;
+        legend.appendChild(item);
+      });
+      statList.appendChild(legend);
+    }
+  }
   // Goal input
   document.getElementById('goal-input').value = dailyGoalForDay(ui.currentDate);
   // Default block duration toggle
   const dur = state.settings.defaultBlockDuration || 30;
   document.getElementById('dur-btn-30').classList.toggle('active', dur === 30);
   document.getElementById('dur-btn-60').classList.toggle('active', dur === 60);
-  // project stats
-  const statList = document.getElementById('proj-stat-list');
-  statList.innerHTML = '';
-  const day = currentDayData(),
-    sched = day.schedule || {},
-    done = new Set(day.completed || []);
-  state.projects.forEach(p => {
-    const planned = Object.values(sched).filter(id => id === p.id).length;
-    const completed = Object.entries(sched).filter(([i, id]) => id === p.id && done.has(+i)).length;
-    if (!planned) return;
-    const div = document.createElement('div');
-    div.className = 'proj-stat-bar';
-    div.innerHTML = `<div class="proj-stat-top"><span class="proj-stat-name" style="color:${p.color}">${p.emoji} ${p.name}</span><span class="proj-stat-count">${completed}/${planned}</span></div>
-      <div class="bar-track"><div class="bar-fill" style="width:${(completed/planned)*100}%;background:${p.color}"></div></div>`;
-    statList.appendChild(div);
-  });
 }
 
 function saveEditProject(id) {
@@ -2096,30 +2489,6 @@ function openDropdown(blockIdx) {
   const dd = document.createElement('div');
   dd.className = 'dropdown';
   dd.id = `dd-${blockIdx}`;
-  // Break option
-  const breakItem = document.createElement('div');
-  breakItem.className = 'dropdown-item';
-  breakItem.style.color = 'var(--muted)';
-  const bName = document.createElement('span');
-  bName.style.flex = '1';
-  bName.textContent = '☕ Break';
-  breakItem.appendChild(bName);
-  const bBtn30 = document.createElement('button');
-  bBtn30.className = 'dd-dur-btn';
-  bBtn30.textContent = '30m';
-  bBtn30.onclick = e => { e.stopPropagation(); assignBlock(blockIdx, '__break__'); };
-  breakItem.appendChild(bBtn30);
-  if (blockIdx + 1 <= 35) {
-    const bBtn1h = document.createElement('button');
-    bBtn1h.className = 'dd-dur-btn';
-    bBtn1h.textContent = '1h';
-    bBtn1h.onclick = e => { e.stopPropagation(); assignBlock1hr(blockIdx, '__break__'); };
-    breakItem.appendChild(bBtn1h);
-  }
-  dd.appendChild(breakItem);
-  const sep = document.createElement('div');
-  sep.style.cssText = 'height:1px;background:var(--border);margin:4px 0';
-  dd.appendChild(sep);
   state.projects.forEach(p => {
     const item = document.createElement('div');
     item.className = 'dropdown-item';
@@ -2193,14 +2562,12 @@ function renderScheduleGrid() {
   const lastPlannedIdx = scheduledIdxs.length > 0 ? Math.max(...scheduledIdxs) : -1;
   const maxH = Math.min(23, 6 + Math.floor((lastPlannedIdx + 1) / 2));
   for (let h = 6; h <= maxH; h++) {
-    const group = document.createElement('div');
-    group.className = 'hour-group';
+    const labelRow = (h - 6) * 2 + 1;
     const lbl = document.createElement('div');
     lbl.className = 'hour-label';
     lbl.textContent = String(h - 5).padStart(2, '0');
-    group.appendChild(lbl);
-    const blocks = document.createElement('div');
-    blocks.className = 'hour-blocks';
+    lbl.style.gridRow = `${labelRow} / ${labelRow + 2}`;
+    grid.appendChild(lbl);
     for (let half = 0; half < 2; half++) {
       const idx = (h - 6) * 2 + half;
       // Skip slots that are part of a span (visually merged into the start slot)
@@ -2208,6 +2575,7 @@ function renderScheduleGrid() {
       const projId = sched[idx],
         proj = projId ? getProject(projId) : null;
       const isBreak = projId === '__break__';
+      const isArchived = projId === '__archived__';
       const span = blockSpan[idx] || 1;
       const isCompleted = done.has(idx),
         isActive = ui.activeBlock === idx,
@@ -2217,7 +2585,7 @@ function renderScheduleGrid() {
       row.className = baseClass + (span >= 2 ? ' block-row-1h' : '');
       row.id = `block-row-${idx}`;
       row.dataset.idx = idx;
-      if (!readOnly && proj) {
+      if (!readOnly && proj && !isArchived) {
         const dh = document.createElement('span');
         dh.className = 'drag-handle';
         dh.textContent = '⠿';
@@ -2225,8 +2593,9 @@ function renderScheduleGrid() {
         row.appendChild(dh);
       }
       const bar = document.createElement('div');
-      bar.className = 'color-bar' + (isBreak ? ' break-bar' : '');
-      if (!isBreak) bar.style.background = proj ? proj.color : 'var(--bg3)';
+      bar.className = 'color-bar' + (isBreak ? ' break-bar' : '') + (isArchived ? ' archived-bar' : '');
+      if (!isBreak && !isArchived) bar.style.background = proj ? proj.color : 'var(--bg3)';
+      if (isArchived) bar.style.background = 'repeating-linear-gradient(45deg,var(--bg3),var(--bg3) 3px,var(--faint) 3px,var(--faint) 6px)';
       bar.style.opacity = isCompleted ? '.35' : '1';
       if (span >= 2) bar.style.height = '50px';
       row.appendChild(bar);
@@ -2264,7 +2633,7 @@ function renderScheduleGrid() {
         actions.className = 'block-actions';
         actions.id = `actions-${idx}`;
         actions.style.opacity = '0';
-        if (proj && !isBreak && !isCompleted && !isActive && isToday()) {
+        if (proj && !isBreak && !isArchived && !isCompleted && !isActive && isToday()) {
           const sb = document.createElement('button');
           sb.className = 'start-btn-small';
           sb.textContent = '▶ start';
@@ -2317,14 +2686,6 @@ function renderScheduleGrid() {
           };
           actions.appendChild(nb);
         }
-        const ab = document.createElement('button');
-        ab.className = 'assign-btn';
-        ab.textContent = proj ? 'change' : '+ assign';
-        ab.onclick = e => {
-          e.stopPropagation();
-          openDropdown(idx);
-        };
-        actions.appendChild(ab);
         if (proj) {
           const cb = document.createElement('button');
           cb.className = 'clear-btn';
@@ -2337,6 +2698,12 @@ function renderScheduleGrid() {
         }
         row.appendChild(actions);
       }
+      // For 1h blocks, add a mid-line marking the 30-min boundary inside the block
+      if (span >= 2) {
+        const midLine = document.createElement('div');
+        midLine.className = 'block-1h-midline' + (half === 1 ? ' block-1h-midline-solid' : ' block-1h-midline-dashed');
+        row.appendChild(midLine);
+      }
       // Click row body to open notes (guard against drag firing a click)
       if (proj && !isBreak) {
         row.style.cursor = 'pointer';
@@ -2345,8 +2712,8 @@ function renderScheduleGrid() {
         row.addEventListener('dragstart', () => { rowDragged = true; });
         row.addEventListener('click', () => { if (!rowDragged) openNotesModal(idx); });
       }
-      // Block-to-block drag (only for 30-min blocks; skip drag for spans to keep it simple)
-      if (!readOnly && proj && span < 2) {
+      // Block-to-block drag
+      if (!readOnly && proj) {
         row.draggable = true;
         row.addEventListener('dragstart', e => {
           if (ui.dragProjId) return;
@@ -2366,6 +2733,9 @@ function renderScheduleGrid() {
           e.preventDefault();
           document.querySelectorAll('.block-row.drag-over,.block-row.proj-drop-target').forEach(r => r.classList.remove('drag-over', 'proj-drop-target'));
           if (ui.dragSrcIdx !== null && ui.dragSrcIdx !== idx) {
+            // For 1-hour block source, don't allow drop at the last slot
+            const srcSpan = ((currentDayData().blockSpan) || {})[ui.dragSrcIdx] || 1;
+            if (srcSpan >= 2 && idx + 1 > 35) return;
             e.dataTransfer.dropEffect = 'move';
             row.classList.add('drag-over');
           } else if (ui.dragProjId) {
@@ -2391,10 +2761,10 @@ function renderScheduleGrid() {
           }
         });
       }
-      blocks.appendChild(row);
+      const slotRow = (h - 6) * 2 + half + 1;
+      row.style.gridRow = `${slotRow} / ${slotRow + span}`;
+      grid.appendChild(row);
     }
-    group.appendChild(blocks);
-    grid.appendChild(group);
   }
   setTimeout(updateTimeneedle, 0);
 }
@@ -2409,7 +2779,7 @@ function renderTimerCard() {
   document.getElementById('timer-ring').style.strokeDashoffset = CIRC * (1 - pct);
   document.getElementById('timer-display').textContent = formatSecs(remaining);
   const day = currentDayData(),
-    done = (day.completed || []).length;
+    done = countDoneBlocks(day);
   document.getElementById('t-blocks').textContent = done;
   document.getElementById('t-hours').textContent = (done * .5).toFixed(1) + 'h';
   if (ui.activeBlock !== null) {
@@ -2418,11 +2788,14 @@ function renderTimerCard() {
     document.getElementById('timer-ring').style.stroke = proj ? proj.color : 'var(--gold)';
     const activeSpan = (currentDayData().blockSpan || {})[ui.activeBlock] || 1;
     const canExtendNow = activeSpan === 1 && ui.activeBlock + 1 <= 35;
-    document.getElementById('timer-controls').innerHTML = `<button class="timer-btn" id="tp-btn">${ui.timerRunning?'⏸ Pause':'▶ Resume'}</button><button class="timer-btn ghost" id="td-btn">✓ Done</button>${canExtendNow ? '<button class="timer-btn extend" id="te-btn">+30m</button>' : ''}`;
+    const canShrinkNow = activeSpan >= 2;
+    document.getElementById('timer-controls').innerHTML = `<button class="timer-btn" id="tp-btn">${ui.timerRunning?'⏸ Pause':'▶ Resume'}</button><button class="timer-btn ghost" id="td-btn">✓ Done</button>${canExtendNow ? '<button class="timer-btn extend" id="te-btn">+30m</button>' : ''}${canShrinkNow ? '<button class="timer-btn extend" id="ts-btn">-30m</button>' : ''}`;
     document.getElementById('tp-btn').onclick = pauseResumeTimer;
     document.getElementById('td-btn').onclick = doneTimer;
     const teBtn = document.getElementById('te-btn');
     if (teBtn) teBtn.onclick = () => extendBlock(ui.activeBlock);
+    const tsBtn = document.getElementById('ts-btn');
+    if (tsBtn) tsBtn.onclick = () => shrinkBlock(ui.activeBlock);
   } else {
     document.getElementById('timer-project-name').textContent = 'No active block';
     document.getElementById('timer-ring').style.stroke = 'var(--gold)';
@@ -2435,7 +2808,7 @@ function renderTimerCard() {
 // ════════════════════════════════════════════════════════════
 function renderGamePanel() {
   const day = currentDayData(),
-    done = (day.completed || []).length,
+    done = countDoneBlocks(day),
     goal = dailyGoalForDay(ui.currentDate);
   const s = computeStats();
   // Goal bar
@@ -2455,12 +2828,8 @@ function renderGamePanel() {
     const left = goal - done;
     badgeEl.innerHTML = `<span class="game-badge" style="background:var(--bg3);color:var(--muted)">${left} block${left!==1?'s':''} to go</span>`;
   }
-  // Streak bar (cap at 30 for display)
   document.getElementById('gv-streak').textContent = s.streak + 'd';
-  document.getElementById('gb-streak').style.width = Math.min(100, s.streak / 30 * 100) + '%';
-  // Completion rate
   document.getElementById('gv-rate').textContent = s.rate + '%';
-  document.getElementById('gb-rate').style.width = s.rate + '%';
   // Momentum/decay
   const m = s.momentum;
   document.getElementById('gv-decay').textContent = m;
@@ -2495,6 +2864,78 @@ function renderGamePanel() {
   // Best day + Avg (numbers only)
   document.getElementById('gv-best').textContent = s.best;
   document.getElementById('gv-avg').textContent = s.avg;
+
+  // Per-project today: planned vs completed — stacked bar
+  const todaySched = day.schedule || {}, todayDoneSet = new Set(day.completed || []);
+  const allTodayProjs = [...state.projects, ARCHIVED_PROJ];
+  const projToday = allTodayProjs
+    .map(p => ({
+      p,
+      planned: Object.values(todaySched).filter(id => id === p.id).length,
+      completed: Object.entries(todaySched).filter(([i, id]) => id === p.id && todayDoneSet.has(+i)).length
+    }))
+    .filter(x => x.planned > 0);
+  const projSection = document.getElementById('proj-stats-section');
+  projSection.innerHTML = '';
+  if (projToday.length) {
+    const totalPlanned = projToday.reduce((s, x) => s + x.planned, 0);
+    // Stacked bar: each segment = project's planned share; completed shown solid, remaining translucent
+    const bar = document.createElement('div');
+    bar.className = 'stacked-bar';
+    bar.style.marginBottom = '8px';
+    projToday.forEach(({ p, planned, completed }) => {
+      const pct = totalPlanned > 0 ? (planned / totalPlanned * 100) : 0;
+      const compPct = planned > 0 ? (completed / planned * 100) : 0;
+      const seg = document.createElement('div');
+      seg.className = 'stacked-bar-seg';
+      seg.style.cssText = `width:${pct}%;background:${p.color}30;position:relative;overflow:hidden`;
+      seg.title = `${p.emoji} ${p.name}: ${completed}/${planned}`;
+      const fill = document.createElement('div');
+      fill.style.cssText = `position:absolute;left:0;top:0;height:100%;width:${compPct}%;background:${p.color}`;
+      seg.appendChild(fill);
+      bar.appendChild(seg);
+    });
+    projSection.appendChild(bar);
+    // Legend
+    const legend = document.createElement('div');
+    legend.className = 'stacked-bar-legend';
+    projToday.forEach(({ p, planned, completed }) => {
+      const item = document.createElement('div');
+      item.className = 'stacked-bar-legend-item';
+      item.innerHTML = `<span class="stacked-bar-legend-dot" style="background:${p.color}"></span><span style="color:${p.color}">${p.emoji} ${p.name}</span><span class="stacked-bar-legend-pct">${completed}/${planned}</span>`;
+      legend.appendChild(item);
+    });
+    projSection.appendChild(legend);
+  }
+
+  // Comparison arrows vs best / avg
+  const avgNum = parseFloat(s.avg) || 0;
+  const bestDiff = done - s.best;
+  const fmtDiff = (n) => (n > 0 ? '↑ +' : n < 0 ? '↓ ' : '→ ') + (n > 0 ? n : n < 0 ? n : '0');
+  const diffColor = (n) => n > 0 ? 'var(--green)' : n < 0 ? 'var(--red)' : 'var(--muted)';
+  const bestEl = document.getElementById('comp-best');
+  bestEl.textContent = s.best > 0 ? fmtDiff(bestDiff) : '—';
+  bestEl.style.color = s.best > 0 ? diffColor(bestDiff) : 'var(--muted)';
+  const avgDiff = Math.round((done - avgNum) * 10) / 10;
+  const avgEl = document.getElementById('comp-avg');
+  avgEl.textContent = avgNum > 0 ? fmtDiff(avgDiff) : '—';
+  avgEl.style.color = avgNum > 0 ? diffColor(avgDiff) : 'var(--muted)';
+
+  // Momentum change indicator for today
+  const changeEl = document.getElementById('gv-decay-change');
+  if (changeEl) {
+    const isWeekendToday = isWeekend(ui.currentDate);
+    const isTimeOff = (currentDayData().timeOff || false);
+    if (isWeekendToday || isTimeOff) {
+      changeEl.textContent = '';
+    } else if (done >= goal) {
+      changeEl.textContent = '+5';
+      changeEl.style.color = 'var(--green)';
+    } else {
+      changeEl.textContent = '−10';
+      changeEl.style.color = 'var(--red)';
+    }
+  }
 }
 
 // ════════════════════════════════════════════════════════════
@@ -2739,6 +3180,29 @@ function renderBlockFocus() {
     setDay(ds, dayD);
     save();
   };
+
+  // ── Tags ──
+  const focusTagPicker = document.getElementById('focus-tag-picker');
+  focusTagPicker.innerHTML = '';
+  const currentFocusTags = bn.tags || [];
+  (state.settings.tags || []).forEach(tag => {
+    const active = currentFocusTags.includes(tag.id);
+    const btn = document.createElement('button');
+    btn.dataset.tagId = tag.id;
+    btn.className = 'tag-pill-btn' + (active ? ' active' : '');
+    btn.style.cssText = `border-color:${tag.color}50;--tag-color:${tag.color}`;
+    btn.innerHTML = `<span style="background:${tag.color}"></span>${tag.name || tag.id}`;
+    btn.onclick = () => {
+      btn.classList.toggle('active');
+      const dayD = getDay(ds);
+      if (!dayD.blockNotes[blockIdx]) dayD.blockNotes[blockIdx] = { note: '', todos: [] };
+      const activeTags = [...focusTagPicker.querySelectorAll('.tag-pill-btn.active')].map(b => b.dataset.tagId);
+      dayD.blockNotes[blockIdx].tags = activeTags.length ? activeTags : undefined;
+      setDay(ds, dayD);
+      save();
+    };
+    focusTagPicker.appendChild(btn);
+  });
 
   // ── Note with dirty-state tracking + markdown ──
   const noteArea = document.getElementById('block-focus-note-area');
@@ -3216,15 +3680,32 @@ function drawBarChart(canvasId, data, color, logicalH) {
   ctx.clearRect(0, 0, W, H);
   if (!data.length) return;
   const maxVal = Math.max(1, ...data.map(d => d.value));
-  const barW = Math.max(2, Math.floor((W - data.length) / data.length));
-  const gap = Math.max(1, Math.floor(W / data.length) - barW);
-  const padBottom = 14;
-  const chartH = H - padBottom;
+  const padLeft = 22, padBottom = 14, padTop = 4;
+  const chartW = W - padLeft;
+  const chartH = H - padBottom - padTop;
+  // Grid lines + y-axis labels
+  const tickCount = 4;
+  ctx.font = '7px monospace';
+  for (let t = 0; t <= tickCount; t++) {
+    const val = Math.round(maxVal * t / tickCount);
+    const y = padTop + chartH * (1 - t / tickCount);
+    ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+    ctx.lineWidth = 0.5;
+    ctx.beginPath();
+    ctx.moveTo(padLeft, y);
+    ctx.lineTo(W, y);
+    ctx.stroke();
+    ctx.fillStyle = '#3a3733';
+    ctx.textAlign = 'right';
+    ctx.fillText(val, padLeft - 3, y + 3);
+  }
+  const barW = Math.max(2, Math.floor((chartW - data.length) / data.length));
+  const gap = Math.max(1, Math.floor(chartW / data.length) - barW);
   data.forEach((d, i) => {
-    const x = i * (barW + gap);
+    const x = padLeft + i * (barW + gap);
     const barH = maxVal > 0 ? Math.max(d.value > 0 ? 2 : 0, Math.round((d.value / maxVal) * chartH)) : 0;
-    const y = chartH - barH;
-    const grad = ctx.createLinearGradient(0, y, 0, chartH);
+    const y = padTop + chartH - barH;
+    const grad = ctx.createLinearGradient(0, y, 0, padTop + chartH);
     grad.addColorStop(0, color + 'cc');
     grad.addColorStop(1, color + '44');
     ctx.fillStyle = grad;
@@ -3234,7 +3715,7 @@ function drawBarChart(canvasId, data, color, logicalH) {
     ctx.fill();
     if (i % (Math.ceil(data.length / 6)) === 0) {
       ctx.fillStyle = '#3a3733';
-      ctx.font = '8px monospace';
+      ctx.font = '7px monospace';
       ctx.textAlign = 'center';
       ctx.fillText(d.label, x + barW / 2, H - 2);
     }
@@ -3245,8 +3726,9 @@ function drawLineChart(canvasId, data, color, logicalH) {
   const canvas = document.getElementById(canvasId);
   if (!canvas) return;
   const dpr = window.devicePixelRatio || 1;
-  const W = canvas.parentElement.clientWidth - 28;
-  const H = logicalH || 70;
+  const wrap = canvas.parentElement;
+  const W = wrap.clientWidth || (logicalH ? logicalH * 1.5 : 200);
+  const H = Math.max(logicalH || 70, wrap.clientHeight || logicalH || 70);
   canvas.width = W * dpr;
   canvas.height = H * dpr;
   canvas.style.width = W + 'px';
@@ -3256,12 +3738,27 @@ function drawLineChart(canvasId, data, color, logicalH) {
   ctx.clearRect(0, 0, W, H);
   if (data.length < 2) return;
   const maxVal = 100;
-  const padBottom = 14,
-    padTop = 4;
+  const padLeft = 26, padBottom = 14, padTop = 4;
+  const chartW = W - padLeft;
   const chartH = H - padBottom - padTop;
-  const stepX = W / (data.length - 1);
+  // Grid lines + y-axis labels
+  const ticks = [0, 25, 50, 75, 100];
+  ctx.font = '7px monospace';
+  ticks.forEach(val => {
+    const y = padTop + chartH * (1 - val / maxVal);
+    ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+    ctx.lineWidth = 0.5;
+    ctx.beginPath();
+    ctx.moveTo(padLeft, y);
+    ctx.lineTo(W, y);
+    ctx.stroke();
+    ctx.fillStyle = '#3a3733';
+    ctx.textAlign = 'right';
+    ctx.fillText(val, padLeft - 3, y + 3);
+  });
+  const stepX = chartW / (data.length - 1);
   const points = data.map((d, i) => ({
-    x: i * stepX,
+    x: padLeft + i * stepX,
     y: padTop + chartH * (1 - d.value / maxVal)
   }));
   const grad = ctx.createLinearGradient(0, padTop, 0, padTop + chartH);
@@ -3284,7 +3781,7 @@ function drawLineChart(canvasId, data, color, logicalH) {
   data.forEach((d, i) => {
     if (i % (Math.ceil(data.length / 6)) === 0) {
       ctx.fillStyle = '#3a3733';
-      ctx.font = '8px monospace';
+      ctx.font = '7px monospace';
       ctx.textAlign = 'center';
       ctx.fillText(d.label, points[i].x, H - 2);
     }
@@ -3422,11 +3919,53 @@ function renderStats() {
     };
   });
 
+  // Project distribution — all-time blocks per project (stacked bar)
+  const projDistEl = document.getElementById('proj-dist-section');
+  if (projDistEl) {
+    projDistEl.innerHTML = '';
+    const allProjs = [...state.projects, ARCHIVED_PROJ];
+    const projTotals = allProjs.map(p => {
+      let count = 0;
+      Object.values(state.days).forEach(d => {
+        Object.values(d.schedule || {}).forEach(pid => { if (pid === p.id) count++; });
+      });
+      return { p, count };
+    }).filter(x => x.count > 0).sort((a, b) => b.count - a.count);
+    const totalBlocks = projTotals.reduce((s, x) => s + x.count, 0);
+    if (!projTotals.length) {
+      projDistEl.innerHTML = '<div style="font-family:\'DM Mono\',monospace;font-size:10px;color:var(--faint)">No data yet.</div>';
+    } else {
+      // Stacked bar
+      const bar = document.createElement('div');
+      bar.className = 'stacked-bar';
+      projTotals.forEach(({ p, count }) => {
+        const pct = totalBlocks > 0 ? (count / totalBlocks * 100) : 0;
+        const seg = document.createElement('div');
+        seg.className = 'stacked-bar-seg';
+        seg.style.cssText = `width:${pct}%;background:${p.color}`;
+        seg.title = `${p.emoji} ${p.name}: ${Math.round(pct)}%`;
+        bar.appendChild(seg);
+      });
+      projDistEl.appendChild(bar);
+      // Legend
+      const legend = document.createElement('div');
+      legend.className = 'stacked-bar-legend';
+      projTotals.forEach(({ p, count }) => {
+        const pct = totalBlocks > 0 ? Math.round(count / totalBlocks * 100) : 0;
+        const item = document.createElement('div');
+        item.className = 'stacked-bar-legend-item';
+        item.innerHTML = `<span class="stacked-bar-legend-dot" style="background:${p.color}"></span><span style="color:${p.color}">${p.emoji} ${p.name}</span><span class="stacked-bar-legend-pct">${pct}%</span>`;
+        legend.appendChild(item);
+      });
+      projDistEl.appendChild(legend);
+    }
+  }
+
   // Draw with explicit logical heights to prevent growing bug
   requestAnimationFrame(() => {
     drawBarChart('chart-blocks', blocksData, '#E8C97A', 90);
     drawBarChart('chart-todos', todosData, '#7CB87C', 90);
-    drawLineChart('chart-momentum', momentumData, '#9B8FCF', 70);
+    drawLineChart('chart-momentum', momentumData, '#9B8FCF', 100);
   });
 }
 
@@ -3458,7 +3997,8 @@ function renderNotesTab() {
         timeLabel: formatTime(h, half),
         note,
         todos,
-        importance: bn.importance || null
+        importance: bn.importance || null,
+        tags: bn.tags || []
       });
     });
   });
@@ -3467,14 +4007,23 @@ function renderNotesTab() {
   const projs = state.projects.filter(p => projEntries[p.id] && projEntries[p.id].length);
 
   // Determine selected project
-  if (!ui.notesTabProjId || !projEntries[ui.notesTabProjId]) {
-    ui.notesTabProjId = projs.length ? projs[0].id : null;
+  const allCount = Object.values(projEntries).reduce((s, arr) => s + arr.length, 0);
+  if (!ui.notesTabProjId || (ui.notesTabProjId !== '__all__' && !projEntries[ui.notesTabProjId])) {
+    ui.notesTabProjId = projs.length ? '__all__' : null;
   }
 
   // Render project list
   projList.innerHTML = '<div class="section-label" style="margin-bottom:10px">Projects</div>';
   if (!projs.length) {
     projList.innerHTML += '<div style="font-family:\'DM Mono\',monospace;font-size:10px;color:var(--faint);padding:6px 4px">No notes yet.<br>Add notes to blocks in the Plan tab.</div>';
+  } else {
+    const allBtn = document.createElement('button');
+    allBtn.className = 'notes-tab-proj-btn' + (ui.notesTabProjId === '__all__' ? ' active' : '');
+    allBtn.innerHTML = `<div class="notes-tab-proj-dot" style="background:var(--muted)"></div>
+      <span class="notes-tab-proj-name">All projects</span>
+      <span class="notes-tab-proj-count">${allCount}</span>`;
+    allBtn.onclick = () => { ui.notesTabProjId = '__all__'; renderNotesTab(); };
+    projList.appendChild(allBtn);
   }
   projs.forEach(p => {
     const count = projEntries[p.id].length;
@@ -3490,21 +4039,44 @@ function renderNotesTab() {
     projList.appendChild(btn);
   });
 
-  // Render filter bar
+  // Render filter bar — stars row + tags row
   const filterBar = document.getElementById('notes-tab-filter-bar');
   if (filterBar) {
     filterBar.innerHTML = '';
+    // Stars row
+    const starsRow = document.createElement('div');
+    starsRow.className = 'notes-filter-row';
     const filterLabels = ['All', '★', '★★', '★★★', '★★★★', '★★★★★'];
     filterLabels.forEach((lbl, i) => {
       const btn = document.createElement('button');
       btn.className = 'imp-filter-btn' + (ui.notesTabImportanceFilter === i ? ' active' : '');
       btn.textContent = lbl;
+      btn.onclick = () => { ui.notesTabImportanceFilter = i; renderNotesTab(); };
+      starsRow.appendChild(btn);
+    });
+    filterBar.appendChild(starsRow);
+    // Tags row
+    const tagsRow = document.createElement('div');
+    tagsRow.className = 'notes-filter-row';
+    const allTagBtn = document.createElement('button');
+    allTagBtn.className = 'imp-filter-btn' + (!ui.notesTabTagFilter.length ? ' active' : '');
+    allTagBtn.textContent = 'All tags';
+    allTagBtn.onclick = () => { ui.notesTabTagFilter = []; renderNotesTab(); };
+    tagsRow.appendChild(allTagBtn);
+    (state.settings.tags || []).forEach(tag => {
+      const isActive = ui.notesTabTagFilter.includes(tag.id);
+      const btn = document.createElement('button');
+      btn.className = 'tag-pill-btn' + (isActive ? ' active' : '');
+      btn.style.cssText = `border-color:${tag.color}50;--tag-color:${tag.color}`;
+      btn.innerHTML = `<span style="background:${tag.color}"></span>${tag.name || tag.id}`;
       btn.onclick = () => {
-        ui.notesTabImportanceFilter = i;
+        if (isActive) ui.notesTabTagFilter = ui.notesTabTagFilter.filter(id => id !== tag.id);
+        else ui.notesTabTagFilter = [...ui.notesTabTagFilter, tag.id];
         renderNotesTab();
       };
-      filterBar.appendChild(btn);
+      tagsRow.appendChild(btn);
     });
+    filterBar.appendChild(tagsRow);
   }
 
   // Render log for selected project
@@ -3513,17 +4085,19 @@ function renderNotesTab() {
     logEl.innerHTML = '<div class="notes-log-empty">No notes found.<br>Write notes on blocks in the Plan tab.</div>';
     return;
   }
-  const proj = getProject(ui.notesTabProjId);
-  const allEntries = (projEntries[ui.notesTabProjId] || []).slice().sort((a, b) => b.date.localeCompare(a.date) || b.blockIdx - a.blockIdx);
-  const entries = ui.notesTabImportanceFilter === 0 ?
-    allEntries :
-    allEntries.filter(e => (e.importance || 0) === ui.notesTabImportanceFilter);
+
+  const isAll = ui.notesTabProjId === '__all__';
+  const rawEntries = isAll
+    ? Object.entries(projEntries).flatMap(([pid, arr]) => arr.map(e => ({ ...e, projId: pid })))
+    : (projEntries[ui.notesTabProjId] || []).map(e => ({ ...e, projId: ui.notesTabProjId }));
+  const allEntries = rawEntries.slice().sort((a, b) => b.date.localeCompare(a.date) || b.blockIdx - a.blockIdx);
+  const entries = allEntries
+    .filter(e => ui.notesTabImportanceFilter === 0 || (e.importance || 0) === ui.notesTabImportanceFilter)
+    .filter(e => !ui.notesTabTagFilter.length || ui.notesTabTagFilter.some(tid => (e.tags || []).includes(tid)));
 
   if (!entries.length) {
-    const msg = ui.notesTabImportanceFilter > 0 ?
-      `<div class="notes-log-empty">No ${'★'.repeat(ui.notesTabImportanceFilter)} notes for this project.</div>` :
-      '<div class="notes-log-empty">No notes for this project yet.</div>';
-    logEl.innerHTML = msg;
+    const hasFilter = ui.notesTabImportanceFilter > 0 || ui.notesTabTagFilter.length > 0;
+    logEl.innerHTML = `<div class="notes-log-empty">${hasFilter ? 'No notes match the current filters.' : 'No notes for this project yet.'}</div>`;
     return;
   }
 
@@ -3543,13 +4117,15 @@ function renderNotesTab() {
     dayEntries.forEach(e => {
       const card = document.createElement('div');
       card.className = 'notes-log-entry';
+      const entryProj = getProject(e.projId);
       let html = `<div class="notes-log-entry-header">
         <div class="notes-log-entry-time">${e.timeLabel}</div>
         <div class="notes-log-entry-proj">
-          <div class="notes-log-entry-proj-dot" style="background:${proj.color}"></div>
-          <span style="color:${proj.color}">${proj.emoji} ${proj.name}</span>
+          <div class="notes-log-entry-proj-dot" style="background:${entryProj.color}"></div>
+          <span style="color:${entryProj.color}">${entryProj.emoji} ${entryProj.name}</span>
         </div>
         ${e.importance?`<div class="notes-log-imp-stars" title="Importance: ${e.importance}/5">${'★'.repeat(e.importance)}${'☆'.repeat(5-e.importance)}</div>`:''}
+        ${(e.tags||[]).length ? `<div class="notes-log-tags">${(e.tags).map(tid=>{const t=(state.settings.tags||[]).find(x=>x.id===tid);return t?`<span class="notes-log-tag-dot" title="${t.name||tid}" style="background:${t.color}"></span>`:''}).join('')}</div>` : ''}
       </div>`;
       if (e.note) {
         html += `<div class="notes-log-note-text md-preview" style="border-radius:6px;padding:4px 6px;cursor:pointer;word-break:break-word;line-height:1.6;color:var(--muted)">${renderMarkdown(e.note)}</div>`;
@@ -3688,9 +4264,11 @@ function switchTab(tab) {
   ui.tab = tab;
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === tab + '-panel'));
-  // Show date nav only on Plan tab
+  // Show date nav and sidebar only on Plan tab
   const navRow = document.getElementById('nav-row');
   if (navRow) navRow.style.visibility = tab === 'plan' ? 'visible' : 'hidden';
+  const sidebar = document.getElementById('sidebar');
+  if (sidebar) sidebar.style.display = tab === 'plan' ? '' : 'none';
   // Show export MD button only on Notes tab
   const mdBtn = document.getElementById('export-notes-md-btn');
   if (mdBtn) mdBtn.style.display = tab === 'notes' ? '' : 'none';
@@ -3699,7 +4277,11 @@ function switchTab(tab) {
     ui.currentDate = todayStr();
     renderTodayTab();
   }
-  if (tab === 'todos') renderTodosTab();
+  if (tab === 'todos') {
+    // Reset open state to default each time the tab is visited
+    ui.openProjTodosIds = state.settings.todosDefaultOpen !== false ? null : new Set();
+    renderTodosTab();
+  }
   if (tab === 'notes') renderNotesTab();
   if (tab === 'plan') {
     renderScheduleGrid();
@@ -3714,9 +4296,11 @@ function renderAll() {
   renderHeaderStats();
   renderSidebar();
   renderScheduleGrid();
-  // Show nav only on Plan tab
+  // Show nav and sidebar only on Plan tab
   const navRow = document.getElementById('nav-row');
   if (navRow) navRow.style.visibility = ui.tab === 'plan' ? 'visible' : 'hidden';
+  const sidebarEl = document.getElementById('sidebar');
+  if (sidebarEl) sidebarEl.style.display = ui.tab === 'plan' ? '' : 'none';
   if (ui.tab === 'today') renderTodayTab();
   else renderTimerCard();
   if (ui.tab === 'stats') renderStats();
@@ -3854,25 +4438,10 @@ document.addEventListener('DOMContentLoaded', () => {
   // Time-off toggle
   document.getElementById('timeoff-btn').addEventListener('click', toggleTimeOff);
 
-  // Add project
-  document.getElementById('add-proj-toggle').addEventListener('click', () => document.getElementById('add-proj-form').classList.toggle('visible'));
-  document.getElementById('cancel-add-proj').addEventListener('click', () => document.getElementById('add-proj-form').classList.remove('visible'));
-  document.getElementById('confirm-add-proj').addEventListener('click', () => {
-    const name = document.getElementById('new-name').value.trim();
-    if (!name) return;
-    state.projects.push({
-      id: name.toLowerCase().replace(/\s+/g, '-') + '-' + Date.now(),
-      name,
-      emoji: document.getElementById('new-emoji').value || '⚡',
-      color: document.getElementById('new-color').value
-    });
-    save();
-    document.getElementById('new-name').value = '';
-    document.getElementById('add-proj-form').classList.remove('visible');
-    renderAll();
-  });
-  document.getElementById('new-name').addEventListener('keydown', e => {
-    if (e.key === 'Enter') document.getElementById('confirm-add-proj').click();
+  // Settings panel (btn uses onclick in HTML; close/overlay-click wired here)
+  document.getElementById('settings-close').addEventListener('click', closeSettings);
+  document.getElementById('settings-overlay').addEventListener('click', e => {
+    if (e.target === document.getElementById('settings-overlay')) closeSettings();
   });
 
   // Notes modal
@@ -3912,6 +4481,10 @@ document.addEventListener('DOMContentLoaded', () => {
   // Tab visibility
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) {
+      // Resume audio context if it was suspended while tab was hidden
+      if (_soundCtx && _soundCtx.state === 'suspended') {
+        _soundCtx.resume().then(() => { if (_soundInterval) _playChime(); });
+      }
       // Check if the date changed while tab was hidden (e.g. left open overnight)
       const realToday = todayStr();
       if (ui._lastKnownDate && ui._lastKnownDate !== realToday) {

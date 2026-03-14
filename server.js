@@ -35,7 +35,8 @@ const server = http.createServer((req, res) => {
       try {
         const { title, message } = JSON.parse(body);
         const safe = s => s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-        exec(`osascript -e 'display notification "${safe(message)}" with title "${safe(title)}" sound name "Glass"'`);
+        exec(`osascript -e 'display notification "${safe(message)}" with title "${safe(title)}"'`);
+        exec('afplay /System/Library/Sounds/Glass.aiff');
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
       } catch (err) {

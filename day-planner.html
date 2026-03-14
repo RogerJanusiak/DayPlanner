@@ -23,6 +23,7 @@
       <div class="stat"><div class="stat-val" id="stat-streak" style="color:var(--orange)">0d</div><div class="stat-label">STREAK</div></div>
       <div class="stat"><div class="stat-val" id="stat-best" style="color:var(--pink)">0</div><div class="stat-label">BEST DAY</div></div>
     </div>
+    <button id="settings-btn" title="Settings" onclick="openSettings()">⚙</button>
   </div>
   <div style="display:flex;align-items:center;justify-content:space-between">
     <div id="tabs">
@@ -50,20 +51,9 @@
   <div id="sidebar-inner">
     <div class="section-label">Projects <span style="color:var(--faint);font-size:8px;letter-spacing:0">· drag to schedule</span></div>
     <div id="proj-list"></div>
-    <button class="add-proj-btn" id="add-proj-toggle">+ Add project</button>
-    <div id="add-proj-form">
-      <div class="form-row">
-        <input class="mini-input emoji-input" id="new-emoji" type="text" value="⚡" maxlength="2">
-        <input class="color-input" id="new-color" type="color" value="#9B8FCF">
-        <input class="mini-input" id="new-name" type="text" placeholder="Name" style="flex:1">
-      </div>
-      <div style="display:flex;gap:5px">
-        <button class="btn-primary" id="confirm-add-proj" style="flex:1">Add</button>
-        <button class="btn-ghost" id="cancel-add-proj">✕</button>
-      </div>
-    </div>
   </div>
   <div id="sidebar-bottom">
+    <div id="proj-stat-list" style="margin-bottom:10px"></div>
     <div id="goal-row">
       <div id="goal-label">DAILY GOAL (blocks)</div>
       <input type="number" id="goal-input" min="1" max="36" value="8">
@@ -75,8 +65,6 @@
         <button class="dur-toggle-btn" id="dur-btn-60">1hr</button>
       </div>
     </div>
-    <div class="section-label" style="margin-bottom:8px">Today by project</div>
-    <div id="proj-stat-list"></div>
     <div id="timeoff-row">
       <div id="timeoff-label">Mark today as<br>time off (no penalty)</div>
       <button class="toggle-btn" id="timeoff-btn">OFF</button>
@@ -122,15 +110,14 @@
         <div id="notif-enable-row" style="display:none;margin-top:8px">
           <button id="notif-enable-btn" onclick="enableNotifications()">🔔 Enable Notifications</button>
         </div>
-        <hr id="timer-divider">
-        <div class="timer-stat">
-          <div class="timer-stat-item"><div class="timer-stat-val" id="t-blocks">0</div><div class="timer-stat-lbl">DONE</div></div>
-          <div class="timer-stat-item"><div class="timer-stat-val" id="t-hours">0.0h</div><div class="timer-stat-lbl">HOURS</div></div>
-        </div>
       </div>
       <!-- Gamification -->
       <div id="game-panel">
         <div id="game-panel-title">Today's Progress</div>
+        <div class="timer-stat" style="margin-bottom:10px">
+          <div class="timer-stat-item"><div class="timer-stat-val" id="t-blocks">0</div><div class="timer-stat-lbl">DONE</div></div>
+          <div class="timer-stat-item"><div class="timer-stat-val" id="t-hours">0.0h</div><div class="timer-stat-lbl">HOURS</div></div>
+        </div>
         <!-- Goal bar -->
         <div class="game-stat" id="goal-stat">
           <div class="game-stat-row">
@@ -140,22 +127,6 @@
           <div class="game-bar-track"><div class="game-bar-fill" id="gb-goal" style="background:var(--teal)"></div></div>
           <div id="gv-goal-badge"></div>
         </div>
-        <!-- Streak -->
-        <div class="game-stat">
-          <div class="game-stat-row">
-            <span class="game-stat-label">STREAK</span>
-            <span class="game-stat-val" id="gv-streak" style="color:var(--orange)">0d</span>
-          </div>
-          <div class="game-bar-track"><div class="game-bar-fill" id="gb-streak" style="background:var(--orange)"></div></div>
-        </div>
-        <!-- Completion rate -->
-        <div class="game-stat">
-          <div class="game-stat-row">
-            <span class="game-stat-label">ALL-TIME RATE</span>
-            <span class="game-stat-val" id="gv-rate" style="color:var(--green)">0%</span>
-          </div>
-          <div class="game-bar-track"><div class="game-bar-fill" id="gb-rate" style="background:var(--green)"></div></div>
-        </div>
         <!-- Project todos today -->
         <div class="game-stat">
           <div class="game-stat-row">
@@ -163,6 +134,29 @@
             <span class="game-stat-val" id="gv-proj-todos" style="color:var(--gold)">0/0</span>
           </div>
           <div class="game-bar-track"><div class="game-bar-fill" id="gb-proj-todos" style="background:var(--gold)"></div></div>
+        </div>
+        <!-- Comparison vs best/avg -->
+        <div id="comparison-section">
+          <div class="comparison-row">
+            <span class="game-stat-label">VS BEST DAY</span>
+            <span id="comp-best" class="comparison-val">—</span>
+          </div>
+          <div class="comparison-row">
+            <span class="game-stat-label">VS AVG DAY</span>
+            <span id="comp-avg" class="comparison-val">—</span>
+          </div>
+        </div>
+        <!-- Overall Progress section -->
+        <!-- Streak + Rate inline (no bars) -->
+        <div class="game-stat-inline-row">
+          <div class="game-stat-inline">
+            <span class="game-stat-label" style="display:block;margin-bottom:3px">STREAK</span>
+            <span class="game-stat-val" id="gv-streak" style="color:var(--orange)">0d</span>
+          </div>
+          <div class="game-stat-inline">
+            <span class="game-stat-label" style="display:block;margin-bottom:3px">GOAL RATE</span>
+            <span class="game-stat-val" id="gv-rate" style="color:var(--green)">0%</span>
+          </div>
         </div>
         <!-- Best day + Avg inline -->
         <div class="game-stat-inline-row">
@@ -175,11 +169,12 @@
             <span class="game-stat-val" id="gv-avg" style="color:var(--muted)">0.0</span>
           </div>
         </div>
-        <!-- Momentum at bottom -->
+        <!-- Momentum -->
         <div id="decay-stat">
           <div id="decay-label-row">
             <span class="game-stat-label">MOMENTUM</span>
             <span class="game-stat-val" id="gv-decay" style="color:var(--purple)">100</span>
+            <span id="gv-decay-change" style="font-family:'DM Mono',monospace;font-size:10px;margin-left:4px"></span>
             <span class="momentum-info-btn" id="momentum-info-btn" title="How momentum works">ⓘ</span>
             <div class="momentum-tooltip" id="momentum-tooltip">
               Fades each day without hitting your goal.<br>
@@ -189,6 +184,12 @@
           </div>
           <div class="game-bar-track"><div id="decay-bar-fill" class="game-bar-fill" style="background:var(--purple);width:100%"></div></div>
         </div>
+        <!-- Today by project section -->
+        <div class="game-section-divider">
+          <span class="game-section-title">TODAY BY PROJECT</span>
+        </div>
+        <!-- Project breakdown -->
+        <div id="proj-stats-section"></div>
       </div>
     </div>
     <!-- Block Focus View (shown when a block is active) -->
@@ -209,6 +210,10 @@
           <button class="star-btn" data-val="5">★</button>
         </div>
         <button class="clear-imp-btn" id="focus-clear-imp-btn" style="margin-top:8px">clear</button>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:12px">
+          <div class="block-focus-section-label" style="margin-bottom:0;flex-shrink:0">Tags</div>
+          <div id="focus-tag-picker" style="display:flex;gap:5px;flex-wrap:wrap"></div>
+        </div>
       </div>
       <!-- Notes with markdown -->
       <div class="block-focus-section">
@@ -306,9 +311,17 @@
         <canvas id="chart-todos" height="90"></canvas>
       </div>
     </div>
-    <div style="background:var(--bg2);border:1px solid var(--border);border-radius:11px;padding:14px;margin-bottom:16px">
-      <div style="font-family:'DM Mono',monospace;font-size:9px;color:var(--muted);letter-spacing:.1em;margin-bottom:10px">MOMENTUM — LAST 30 DAYS</div>
-      <canvas id="chart-momentum" height="70"></canvas>
+    <div style="display:grid;grid-template-columns:1fr 1.6fr;gap:12px;margin-bottom:16px">
+      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:11px;padding:14px;display:flex;flex-direction:column">
+        <div style="font-family:'DM Mono',monospace;font-size:9px;color:var(--muted);letter-spacing:.1em;margin-bottom:10px;flex-shrink:0">MOMENTUM — LAST 30 DAYS</div>
+        <div style="flex:1;min-height:100px" id="chart-momentum-wrap">
+          <canvas id="chart-momentum"></canvas>
+        </div>
+      </div>
+      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:11px;padding:14px">
+        <div style="font-family:'DM Mono',monospace;font-size:9px;color:var(--muted);letter-spacing:.1em;margin-bottom:10px">TIME BY PROJECT — ALL TIME</div>
+        <div id="proj-dist-section"></div>
+      </div>
     </div>
   </div>
 
@@ -356,6 +369,12 @@
         </div>
         <button class="clear-imp-btn" id="clear-imp-btn">clear</button>
       </div>
+      <div class="importance-row" id="notes-tag-row">
+        <span class="importance-label">TAGS</span>
+        <div id="notes-tag-picker"></div>
+        <button class="clear-imp-btn" id="notes-tag-edit-btn">rename</button>
+      </div>
+      <div id="notes-tag-rename-row" style="display:none"></div>
       <div class="notes-section-label" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
         <span>Notes</span>
         <div style="display:flex;gap:4px">
@@ -395,6 +414,17 @@
     <button id="bcp-dismiss-btn">✕ Dismiss</button>
   </div>
   <button id="bcp-sound-btn">🔇 Stop Sound</button>
+</div>
+
+<!-- SETTINGS OVERLAY -->
+<div id="settings-overlay">
+  <div id="settings-panel">
+    <div id="settings-header">
+      <span id="settings-title">⚙ Settings</span>
+      <button id="settings-close">✕</button>
+    </div>
+    <div id="settings-body"></div>
+  </div>
 </div>
 
 <script src="day-planner.js"></script>
