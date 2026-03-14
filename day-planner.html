@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Day Planner</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700;900&family=DM+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=DM+Mono:wght@300;400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="day-planner.css">
 </head>
 <body>
@@ -15,17 +15,6 @@
 <div id="header">
   <div id="header-top">
     <div id="header-title">Day Planner</div>
-    <div id="stats-row">
-      <div class="stat"><div class="stat-val" id="stat-planned" style="color:var(--gold)">0</div><div class="stat-label">PLANNED</div></div>
-      <div class="stat"><div class="stat-val" id="stat-done" style="color:var(--green)">0</div><div class="stat-label">DONE</div></div>
-      <div class="stat"><div class="stat-val" id="stat-goal-pct" style="color:var(--teal)">—</div><div class="stat-label">GOAL %</div></div>
-      <div class="stat"><div class="stat-val" id="stat-avg" style="color:var(--purple)">0.0</div><div class="stat-label">AVG/DAY</div></div>
-      <div class="stat"><div class="stat-val" id="stat-streak" style="color:var(--orange)">0d</div><div class="stat-label">STREAK</div></div>
-      <div class="stat"><div class="stat-val" id="stat-best" style="color:var(--pink)">0</div><div class="stat-label">BEST DAY</div></div>
-    </div>
-    <button id="settings-btn" title="Settings" onclick="openSettings()">⚙</button>
-  </div>
-  <div style="display:flex;align-items:center;justify-content:space-between">
     <div id="tabs">
       <button class="tab-btn active" data-tab="plan">Plan</button>
       <button class="tab-btn" data-tab="today">Today</button>
@@ -33,13 +22,8 @@
       <button class="tab-btn" data-tab="notes">Notes</button>
       <button class="tab-btn" data-tab="stats">Stats</button>
     </div>
-    <div id="nav-row" style="display:flex;align-items:center;gap:6px;padding-bottom:2px">
-      <button class="nav-arr" id="nav-prev">&#8592;</button>
-      <div id="date-display">—</div>
-      <button class="nav-arr" id="nav-next">&#8594;</button>
-      <button id="nav-today-btn">Today</button>
-      <div id="readonly-badge">PAST — READ ONLY</div>
-    </div>
+    <div id="save-status"></div>
+    <button id="settings-btn" title="Settings" onclick="openSettings()">⚙</button>
   </div>
 </div>
 
@@ -54,21 +38,7 @@
   </div>
   <div id="sidebar-bottom">
     <div id="proj-stat-list" style="margin-bottom:10px"></div>
-    <div id="goal-row">
-      <div id="goal-label">DAILY GOAL (blocks)</div>
-      <input type="number" id="goal-input" min="1" max="36" value="8">
-    </div>
-    <div id="default-block-row">
-      <div id="default-block-label">DEFAULT BLOCK</div>
-      <div id="default-block-toggle">
-        <button class="dur-toggle-btn active" id="dur-btn-30">30m</button>
-        <button class="dur-toggle-btn" id="dur-btn-60">1hr</button>
-      </div>
-    </div>
-    <div id="timeoff-row">
-      <div id="timeoff-label">Mark today as<br>time off (no penalty)</div>
-      <button class="toggle-btn" id="timeoff-btn">OFF</button>
-    </div>
+    <!-- default-block and timeoff moved to settings / nav-row -->
   </div>
 </div>
 
@@ -77,6 +47,14 @@
 
   <!-- PLAN TAB -->
   <div class="tab-panel active" id="plan-panel">
+    <div id="nav-row">
+      <button class="nav-arr" id="nav-prev">&#8592;</button>
+      <div id="date-display">—</div>
+      <button class="nav-arr" id="nav-next">&#8594;</button>
+      <button id="nav-today-btn">Today</button>
+      <div id="readonly-badge">PAST — READ ONLY</div>
+      <button class="toggle-btn" id="timeoff-btn" title="Mark as time off (no penalty)">Time Off</button>
+    </div>
     <div id="plan-active-banner" style="display:none;position:sticky;top:0;z-index:100;padding:8px 18px 0;background:var(--bg);border-bottom:1px solid var(--border)">
       <div id="plan-active-banner-inner" style="background:rgba(232,201,122,.1);border:1px solid rgba(232,201,122,.4);border-radius:8px;padding:8px 14px;display:flex;align-items:center;gap:10px;margin-bottom:8px">
         <span id="plan-active-banner-name" style="font-family:'DM Mono',monospace;font-size:11px;color:var(--gold);flex:1"></span>
@@ -113,8 +91,9 @@
       </div>
       <!-- Gamification -->
       <div id="game-panel">
-        <div id="game-panel-title">Today's Progress</div>
+        <div class="game-section-divider" style="margin-top:0"><span class="game-section-title">TODAY'S PROGRESS</span></div>
         <div class="timer-stat" style="margin-bottom:10px">
+          <div class="timer-stat-item"><div class="timer-stat-val" id="t-planned">0</div><div class="timer-stat-lbl">PLANNED</div></div>
           <div class="timer-stat-item"><div class="timer-stat-val" id="t-blocks">0</div><div class="timer-stat-lbl">DONE</div></div>
           <div class="timer-stat-item"><div class="timer-stat-val" id="t-hours">0.0h</div><div class="timer-stat-lbl">HOURS</div></div>
         </div>
@@ -199,20 +178,24 @@
         <div id="block-focus-title">Block</div>
         <div id="block-focus-time"></div>
       </div>
-      <!-- Importance -->
+      <!-- Importance + Tags side by side -->
       <div class="block-focus-section" style="padding:14px 20px">
-        <div class="block-focus-section-label" style="margin-bottom:10px">Importance</div>
-        <div class="star-picker" id="focus-star-picker">
-          <button class="star-btn" data-val="1">★</button>
-          <button class="star-btn" data-val="2">★</button>
-          <button class="star-btn" data-val="3">★</button>
-          <button class="star-btn" data-val="4">★</button>
-          <button class="star-btn" data-val="5">★</button>
-        </div>
-        <button class="clear-imp-btn" id="focus-clear-imp-btn" style="margin-top:8px">clear</button>
-        <div style="display:flex;align-items:center;gap:8px;margin-top:12px">
-          <div class="block-focus-section-label" style="margin-bottom:0;flex-shrink:0">Tags</div>
-          <div id="focus-tag-picker" style="display:flex;gap:5px;flex-wrap:wrap"></div>
+        <div style="display:flex;gap:20px;align-items:flex-start">
+          <div style="flex-shrink:0">
+            <div class="block-focus-section-label" style="margin-bottom:8px">Importance</div>
+            <div class="star-picker" id="focus-star-picker">
+              <button class="star-btn" data-val="1">★</button>
+              <button class="star-btn" data-val="2">★</button>
+              <button class="star-btn" data-val="3">★</button>
+              <button class="star-btn" data-val="4">★</button>
+              <button class="star-btn" data-val="5">★</button>
+            </div>
+            <button class="clear-imp-btn" id="focus-clear-imp-btn" style="margin-top:6px">clear</button>
+          </div>
+          <div style="flex:1;min-width:0">
+            <div class="block-focus-section-label" style="margin-bottom:8px">Tags</div>
+            <div id="focus-tag-picker" style="display:flex;gap:5px;flex-wrap:wrap"></div>
+          </div>
         </div>
       </div>
       <!-- Notes with markdown -->
@@ -339,12 +322,11 @@
 </div><!-- #main -->
 </div><!-- #body -->
 
-<!-- IO BAR -->
-<div id="io-bar">
-  <div id="io-bar-label">Auto-saved to browser · Export YAML for backup</div>
-  <button class="io-btn" id="export-notes-md-btn" style="display:none;border-color:var(--purple);color:var(--purple)">⬇ Export Notes (.md)</button>
-  <button class="io-btn" id="export-btn">⬇ Export YAML</button>
-  <button class="io-btn" id="import-btn">⬆ Import YAML</button>
+<!-- Hidden inputs/buttons for JS references (moved to settings) -->
+<div style="display:none">
+  <button id="export-notes-md-btn"></button>
+  <button id="export-btn"></button>
+  <button id="import-btn"></button>
   <input type="file" id="import-input" accept=".yaml,.yml">
 </div>
 </div><!-- #app -->
@@ -414,6 +396,14 @@
     <button id="bcp-dismiss-btn">✕ Dismiss</button>
   </div>
   <button id="bcp-sound-btn">🔇 Stop Sound</button>
+</div>
+
+<!-- Hidden elements for legacy JS references -->
+<input type="number" id="goal-input" min="1" max="36" value="8" style="display:none">
+<div style="display:none">
+  <button id="dur-btn-30"></button>
+  <button id="dur-btn-60"></button>
+  <div id="timeoff-label"></div>
 </div>
 
 <!-- SETTINGS OVERLAY -->

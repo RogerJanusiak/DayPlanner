@@ -309,16 +309,17 @@ function save() {
   } catch (e) {}
 }
 
-function setServerStatus(state) {
-  const el = document.getElementById('io-bar-label');
-  if (!el) return;
-  const t = new Date().toLocaleTimeString([], {
-    hour: '2-digit',
-    minute: '2-digit'
-  });
-  if (state === 'saved') el.innerHTML = `Auto-saved to browser &amp; file &middot; last save ${t}`;
-  else if (state === 'offline') el.textContent = 'Auto-saved to browser · Server offline — run server.js for file backup';
-  else el.textContent = 'Auto-saved to browser · File save error — check server.js';
+function setServerStatus(status) {
+  const t = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  let text, color;
+  if (status === 'saved') { text = `Saved ${t}`; color = 'var(--green)'; }
+  else if (status === 'offline') { text = 'Offline'; color = 'var(--faint)'; }
+  else { text = 'Save error'; color = 'var(--red)'; }
+  const el = document.getElementById('save-status');
+  if (el) { el.textContent = text; el.style.color = color; }
+  // also update settings panel label if open
+  const sp = document.getElementById('sp-io-bar-label');
+  if (sp) sp.textContent = status === 'saved' ? `Auto-saved · last save ${t}` : status === 'offline' ? 'Auto-saved to browser · server offline' : 'Auto-saved to browser · file save error';
 }
 async function loadFromServer() {
   try {
@@ -349,6 +350,8 @@ function load() {
   };
   if (!state.settings.defaultBlockDuration) state.settings.defaultBlockDuration = 30;
   if (state.settings.todosDefaultOpen === undefined) state.settings.todosDefaultOpen = true;
+  if (state.settings.theme === undefined) state.settings.theme = 'dark';
+  document.documentElement.dataset.theme = state.settings.theme === 'light' ? 'light' : '';
   if (!state.settings.tags) state.settings.tags = [
     {id:'t1', color:'#E55555', name:''},
     {id:'t2', color:'#E8A838', name:''},
@@ -1503,7 +1506,7 @@ function openNotesModal(blockIdx, ds, notesOnly) {
     btn.dataset.tagId = tag.id;
     btn.className = 'tag-pill-btn' + (active ? ' active' : '');
     btn.style.cssText = `border-color:${tag.color}50;--tag-color:${tag.color}`;
-    btn.innerHTML = `<span style="background:${tag.color}"></span>${tag.name || tag.id}`;
+    btn.innerHTML = `<span style="background:${tag.color}"></span>${tag.name ? escAttr(tag.name) : ''}`;
     btn.onclick = () => btn.classList.toggle('active');
     tagPicker.appendChild(btn);
   });
@@ -1523,7 +1526,7 @@ function openNotesModal(blockIdx, ds, notesOnly) {
         inp.oninput = () => {
           tag.name = inp.value;
           const pill = tagPicker.querySelector(`[data-tag-id="${tag.id}"]`);
-          if (pill) pill.innerHTML = `<span style="background:${tag.color}"></span>${tag.name || tag.id}`;
+          if (pill) pill.innerHTML = `<span style="background:${tag.color}"></span>${tag.name ? escAttr(tag.name) : ''}`;
           save();
         };
         tagRenameRow.appendChild(inp);
@@ -2160,17 +2163,7 @@ function renderTodayTodos() {
 //  RENDER: HEADER STATS
 // ════════════════════════════════════════════════════════════
 function renderHeaderStats() {
-  const day = currentDayData(),
-    s = computeStats();
-  document.getElementById('stat-planned').textContent = Object.keys(day.schedule || {}).length;
-  const done = countDoneBlocks(day);
-  document.getElementById('stat-done').textContent = done;
-  const goal = dailyGoalForDay(ui.currentDate);
-  const pct = goal > 0 ? Math.round(done / goal * 100) : 0;
-  document.getElementById('stat-goal-pct').textContent = goal ? `${pct}%` : '—';
-  document.getElementById('stat-avg').textContent = s.avg;
-  document.getElementById('stat-streak').textContent = s.streak + 'd';
-  document.getElementById('stat-best').textContent = s.best;
+  // stat elements removed from header — no-op
 }
 
 function renderDateNav() {
@@ -2180,13 +2173,10 @@ function renderDateNav() {
   document.getElementById('nav-prev').disabled = false;
   document.getElementById('nav-next').disabled = idx <= 0;
   document.getElementById('readonly-badge').style.display = 'none';
-  // time-off toggle — always visible for any day
+  // time-off toggle
   const day = currentDayData();
   const btn = document.getElementById('timeoff-btn');
-  btn.textContent = day.timeOff ? 'ON' : 'OFF';
   btn.classList.toggle('on', !!day.timeOff);
-  btn.style.display = '';
-  document.getElementById('timeoff-label').style.display = '';
 }
 
 // ════════════════════════════════════════════════════════════
@@ -2363,6 +2353,83 @@ function renderSettingsPanel() {
   const prefSection = document.createElement('div');
   prefSection.className = 'settings-section';
   prefSection.innerHTML = '<div class="settings-section-title">Preferences</div>';
+
+  // Daily Goal
+  const goalPref = document.createElement('div');
+  goalPref.className = 'settings-pref-row';
+  goalPref.innerHTML = `<div class="settings-pref-label">
+    <div class="settings-pref-name">Daily goal (blocks)</div>
+    <div class="settings-pref-desc">How many blocks count as hitting your goal for the day</div>
+  </div>
+  <input type="number" id="sp-goal-input" class="mini-input" min="1" max="36" value="${dailyGoal()}" style="width:52px;text-align:center">`;
+  const spGoalInp = goalPref.querySelector('#sp-goal-input');
+  spGoalInp.onchange = () => {
+    const v = Math.max(1, Math.min(36, +spGoalInp.value || 8));
+    spGoalInp.value = v;
+    const oldGoal = dailyGoal();
+    Object.keys(state.days).forEach(ds => { if (!state.days[ds].dailyGoal) state.days[ds].dailyGoal = oldGoal; });
+    const day = currentDayData();
+    day.dailyGoal = v;
+    setDay(ui.currentDate, day);
+    state.settings.dailyGoal = v;
+    // sync the hidden input legacy JS uses
+    const legacyInp = document.getElementById('goal-input');
+    if (legacyInp) legacyInp.value = v;
+    save();
+    renderAll();
+  };
+  prefSection.appendChild(goalPref);
+
+  // Default block duration
+  const blockDurPref = document.createElement('div');
+  blockDurPref.className = 'settings-pref-row';
+  const curDur = state.settings.defaultBlockDuration || 30;
+  blockDurPref.innerHTML = `<div class="settings-pref-label">
+    <div class="settings-pref-name">Default block size</div>
+    <div class="settings-pref-desc">Duration used when dragging a new block onto the schedule</div>
+  </div>
+  <div style="display:flex;gap:4px">
+    <button class="dur-toggle-btn${curDur===30?' active':''}" id="sp-dur-30">30m</button>
+    <button class="dur-toggle-btn${curDur===60?' active':''}" id="sp-dur-60">1hr</button>
+  </div>`;
+  blockDurPref.querySelector('#sp-dur-30').onclick = function() {
+    state.settings.defaultBlockDuration = 30;
+    save();
+    this.classList.add('active');
+    blockDurPref.querySelector('#sp-dur-60').classList.remove('active');
+    // sync legacy hidden buttons
+    document.getElementById('dur-btn-30').classList.add('active');
+    document.getElementById('dur-btn-60').classList.remove('active');
+  };
+  blockDurPref.querySelector('#sp-dur-60').onclick = function() {
+    state.settings.defaultBlockDuration = 60;
+    save();
+    this.classList.add('active');
+    blockDurPref.querySelector('#sp-dur-30').classList.remove('active');
+    document.getElementById('dur-btn-60').classList.add('active');
+    document.getElementById('dur-btn-30').classList.remove('active');
+  };
+  prefSection.appendChild(blockDurPref);
+
+  // Light/Dark mode
+  const themePref = document.createElement('div');
+  themePref.className = 'settings-pref-row';
+  const isLight = state.settings.theme === 'light';
+  themePref.innerHTML = `<div class="settings-pref-label">
+    <div class="settings-pref-name">Light mode</div>
+    <div class="settings-pref-desc">Switch between dark and light appearance</div>
+  </div>
+  <button class="toggle-btn${isLight ? ' on' : ''}" id="sp-theme-btn">${isLight ? 'ON' : 'OFF'}</button>`;
+  themePref.querySelector('#sp-theme-btn').onclick = function() {
+    state.settings.theme = state.settings.theme === 'light' ? 'dark' : 'light';
+    document.documentElement.dataset.theme = state.settings.theme === 'light' ? 'light' : '';
+    save();
+    this.textContent = state.settings.theme === 'light' ? 'ON' : 'OFF';
+    this.classList.toggle('on', state.settings.theme === 'light');
+  };
+  prefSection.appendChild(themePref);
+
+  // Todos open by default
   const todoPref = document.createElement('div');
   todoPref.className = 'settings-pref-row';
   const todosOpen = state.settings.todosDefaultOpen !== false;
@@ -2379,6 +2446,42 @@ function renderSettingsPanel() {
   };
   prefSection.appendChild(todoPref);
   body.appendChild(prefSection);
+
+  // ── Data ──
+  const dataSection = document.createElement('div');
+  dataSection.className = 'settings-section';
+  dataSection.innerHTML = '<div class="settings-section-title">Data</div>';
+
+  const autoSaveNote = document.createElement('div');
+  autoSaveNote.style.cssText = 'font-family:"DM Mono",monospace;font-size:9px;color:var(--faint);margin-bottom:12px';
+  autoSaveNote.id = 'sp-io-bar-label';
+  autoSaveNote.textContent = 'Auto-saved · Export YAML for backup';
+  dataSection.appendChild(autoSaveNote);
+
+  const dataButtons = document.createElement('div');
+  dataButtons.style.cssText = 'display:flex;flex-direction:column;gap:7px';
+
+  const exportYamlBtn = document.createElement('button');
+  exportYamlBtn.className = 'settings-data-btn';
+  exportYamlBtn.textContent = '⬇ Export YAML';
+  exportYamlBtn.onclick = exportYaml;
+  dataButtons.appendChild(exportYamlBtn);
+
+  const importYamlBtn = document.createElement('button');
+  importYamlBtn.className = 'settings-data-btn';
+  importYamlBtn.textContent = '⬆ Import YAML';
+  importYamlBtn.onclick = () => document.getElementById('import-input').click();
+  dataButtons.appendChild(importYamlBtn);
+
+  const exportNotesBtn = document.createElement('button');
+  exportNotesBtn.className = 'settings-data-btn';
+  exportNotesBtn.style.cssText += ';border-color:var(--purple);color:var(--purple)';
+  exportNotesBtn.textContent = '⬇ Export Notes (.md)';
+  exportNotesBtn.onclick = () => { if (ui.notesTabProjId) exportNotesMarkdown(ui.notesTabProjId); else alert('Select a project in the Notes tab first.'); };
+  dataButtons.appendChild(exportNotesBtn);
+
+  dataSection.appendChild(dataButtons);
+  body.appendChild(dataSection);
 }
 
 // ════════════════════════════════════════════════════════════
@@ -2780,6 +2883,8 @@ function renderTimerCard() {
   document.getElementById('timer-display').textContent = formatSecs(remaining);
   const day = currentDayData(),
     done = countDoneBlocks(day);
+  const planned = Object.keys(day.schedule || {}).length;
+  document.getElementById('t-planned').textContent = planned;
   document.getElementById('t-blocks').textContent = done;
   document.getElementById('t-hours').textContent = (done * .5).toFixed(1) + 'h';
   if (ui.activeBlock !== null) {
@@ -2789,7 +2894,8 @@ function renderTimerCard() {
     const activeSpan = (currentDayData().blockSpan || {})[ui.activeBlock] || 1;
     const canExtendNow = activeSpan === 1 && ui.activeBlock + 1 <= 35;
     const canShrinkNow = activeSpan >= 2;
-    document.getElementById('timer-controls').innerHTML = `<button class="timer-btn" id="tp-btn">${ui.timerRunning?'⏸ Pause':'▶ Resume'}</button><button class="timer-btn ghost" id="td-btn">✓ Done</button>${canExtendNow ? '<button class="timer-btn extend" id="te-btn">+30m</button>' : ''}${canShrinkNow ? '<button class="timer-btn extend" id="ts-btn">-30m</button>' : ''}`;
+    const extendRow = (canExtendNow || canShrinkNow) ? `<div class="timer-extend-row">${canShrinkNow ? '<button class="timer-btn extend" id="ts-btn">−30m</button>' : ''}${canExtendNow ? '<button class="timer-btn extend" id="te-btn">+30m</button>' : ''}</div>` : '';
+    document.getElementById('timer-controls').innerHTML = `<div class="timer-main-row"><button class="timer-btn" id="tp-btn">${ui.timerRunning?'⏸ Pause':'▶ Resume'}</button><button class="timer-btn ghost" id="td-btn">✓ Done</button></div>${extendRow}`;
     document.getElementById('tp-btn').onclick = pauseResumeTimer;
     document.getElementById('td-btn').onclick = doneTimer;
     const teBtn = document.getElementById('te-btn');
@@ -3191,7 +3297,7 @@ function renderBlockFocus() {
     btn.dataset.tagId = tag.id;
     btn.className = 'tag-pill-btn' + (active ? ' active' : '');
     btn.style.cssText = `border-color:${tag.color}50;--tag-color:${tag.color}`;
-    btn.innerHTML = `<span style="background:${tag.color}"></span>${tag.name || tag.id}`;
+    btn.innerHTML = `<span style="background:${tag.color}"></span>${tag.name ? escAttr(tag.name) : ''}`;
     btn.onclick = () => {
       btn.classList.toggle('active');
       const dayD = getDay(ds);
@@ -3278,7 +3384,7 @@ function renderBlockFocus() {
         const card = document.createElement('div');
         card.className = 'focus-recent-note';
         card.innerHTML = `<div class="focus-recent-note-meta">${formatDateLabel(e.ds)}</div>
-          <div class="focus-recent-note-text md-preview" style="padding:0;background:none;border:none">${renderMarkdown(e.note)}</div>`;
+          <div class="focus-recent-note-text md-preview md-preview--auto">${renderMarkdown(e.note)}</div>`;
         recentList.appendChild(card);
       });
     } else {
@@ -4068,7 +4174,7 @@ function renderNotesTab() {
       const btn = document.createElement('button');
       btn.className = 'tag-pill-btn' + (isActive ? ' active' : '');
       btn.style.cssText = `border-color:${tag.color}50;--tag-color:${tag.color}`;
-      btn.innerHTML = `<span style="background:${tag.color}"></span>${tag.name || tag.id}`;
+      btn.innerHTML = `<span style="background:${tag.color}"></span>${tag.name ? escAttr(tag.name) : ''}`;
       btn.onclick = () => {
         if (isActive) ui.notesTabTagFilter = ui.notesTabTagFilter.filter(id => id !== tag.id);
         else ui.notesTabTagFilter = [...ui.notesTabTagFilter, tag.id];
@@ -4264,14 +4370,8 @@ function switchTab(tab) {
   ui.tab = tab;
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === tab + '-panel'));
-  // Show date nav and sidebar only on Plan tab
-  const navRow = document.getElementById('nav-row');
-  if (navRow) navRow.style.visibility = tab === 'plan' ? 'visible' : 'hidden';
   const sidebar = document.getElementById('sidebar');
   if (sidebar) sidebar.style.display = tab === 'plan' ? '' : 'none';
-  // Show export MD button only on Notes tab
-  const mdBtn = document.getElementById('export-notes-md-btn');
-  if (mdBtn) mdBtn.style.display = tab === 'notes' ? '' : 'none';
   if (tab === 'stats') renderStats();
   if (tab === 'today') {
     ui.currentDate = todayStr();
@@ -4296,9 +4396,6 @@ function renderAll() {
   renderHeaderStats();
   renderSidebar();
   renderScheduleGrid();
-  // Show nav and sidebar only on Plan tab
-  const navRow = document.getElementById('nav-row');
-  if (navRow) navRow.style.visibility = ui.tab === 'plan' ? 'visible' : 'hidden';
   const sidebarEl = document.getElementById('sidebar');
   if (sidebarEl) sidebarEl.style.display = ui.tab === 'plan' ? '' : 'none';
   if (ui.tab === 'today') renderTodayTab();
@@ -4355,6 +4452,17 @@ document.addEventListener('DOMContentLoaded', () => {
   })();
 
   document.querySelectorAll('.tab-btn').forEach(btn => btn.addEventListener('click', () => switchTab(btn.dataset.tab)));
+
+  // Arrow keys cycle tabs
+  const TAB_ORDER = ['plan', 'today', 'todos', 'notes', 'stats'];
+  document.addEventListener('keydown', e => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      const idx = TAB_ORDER.indexOf(ui.tab);
+      const next = e.key === 'ArrowRight' ? (idx + 1) % TAB_ORDER.length : (idx - 1 + TAB_ORDER.length) % TAB_ORDER.length;
+      switchTab(TAB_ORDER[next]);
+    }
+  });
 
   // Momentum tooltip toggle
   const momentumBtn = document.getElementById('momentum-info-btn');
