@@ -235,11 +235,20 @@ function computeStreak() {
   return streak;
 }
 
+function firstRecordedDay() {
+  const days = Object.entries(state.days)
+    .filter(([, d]) => Object.keys(d.schedule || {}).length > 0 || (d.completed || []).length > 0)
+    .map(([ds]) => ds)
+    .sort();
+  return days[0] || null;
+}
+
 // Momentum / decay: starts at 100, decays by 10 each weekday the goal is missed,
 // restores by 5 each goal-met weekday. Clamps 0-100.
 function computeMomentum() {
   const today = todayStr();
-  const days = Object.keys(state.days).filter(ds => ds <= today && !isWeekend(ds) && !state.days[ds]?.timeOff).sort();
+  const firstDay = firstRecordedDay();
+  const days = Object.keys(state.days).filter(ds => ds <= today && (!firstDay || ds >= firstDay) && !isWeekend(ds) && !state.days[ds]?.timeOff).sort();
   let m = 100;
   for (const ds of days) {
     const done = countDoneBlocks(state.days[ds]);
@@ -252,7 +261,8 @@ function computeMomentum() {
 function computeStats() {
   // Only non-timeoff weekdays count for streak
   const today = todayStr();
-  const allDays = Object.entries(state.days).filter(([ds]) => ds <= today);
+  const firstDay = firstRecordedDay();
+  const allDays = Object.entries(state.days).filter(([ds]) => ds <= today && (!firstDay || ds >= firstDay));
   const activeDays = allDays.filter(([ds, d]) => !d.timeOff && countDoneBlocks(d) > 0);
   const total = activeDays.reduce((s, [, d]) => s + countDoneBlocks(d), 0);
   const avg = activeDays.length ? (total / activeDays.length).toFixed(1) : '0.0';
@@ -1825,16 +1835,27 @@ function renderTodosTab() {
   // Project todos section
   const projList = document.getElementById('proj-todos-list');
   projList.innerHTML = '';
-  state.projects.forEach(proj => {
+  // Build hierarchical project order
+  const todosTopLevel = state.projects.filter(p => !p.parentId);
+  const todosProjOrder = [];
+  todosTopLevel.forEach(p => {
+    todosProjOrder.push({ proj: p, isChild: false });
+    state.projects.filter(sp => sp.parentId === p.id).forEach(sp => todosProjOrder.push({ proj: sp, isChild: true }));
+  });
+  state.projects.filter(p => p.parentId && !state.projects.find(tp => tp.id === p.parentId))
+    .forEach(p => todosProjOrder.push({ proj: p, isChild: false }));
+
+  todosProjOrder.forEach(({ proj, isChild }) => {
     const todos = getProjTodos(proj.id);
     const active = todos.filter(t => !t.done);
     const done = todos.filter(t => t.done);
     const group = document.createElement('div');
-    group.className = 'proj-todos-group';
+    group.className = 'proj-todos-group' + (isChild ? ' proj-todos-group-child' : '');
     const chevron = active.length || done.length ? '›' : '';
     const isOpen = ui.openProjTodosIds === null || ui.openProjTodosIds.has(proj.id);
+    const childIndent = isChild ? '<span class="proj-todos-child-indent">└</span>' : '';
     group.innerHTML = `<div class="proj-todos-header">
-      <div class="proj-color-dot" style="background:${proj.color}"></div>
+      ${childIndent}<div class="proj-color-dot" style="background:${proj.color}"></div>
       <div class="proj-todos-name" style="color:${proj.color}">${proj.emoji} ${proj.name}</div>
       <div class="proj-todos-count">${active.length} active${done.length?' · '+done.length+' done':''}</div>
       <span class="proj-todos-chevron${isOpen?' open':''}">${chevron}</span>
@@ -1855,8 +1876,15 @@ function renderTodosTab() {
       if (ui.openProjTodosIds === null) {
         ui.openProjTodosIds = new Set(state.projects.map(p => p.id));
       }
-      if (isOpen) ui.openProjTodosIds.delete(proj.id);
-      else ui.openProjTodosIds.add(proj.id);
+      if (isOpen) {
+        ui.openProjTodosIds.delete(proj.id);
+        // Collapse children if this is a top-level project
+        if (!isChild) state.projects.filter(sp => sp.parentId === proj.id).forEach(sp => ui.openProjTodosIds.delete(sp.id));
+      } else {
+        ui.openProjTodosIds.add(proj.id);
+        // Expand children if this is a top-level project
+        if (!isChild) state.projects.filter(sp => sp.parentId === proj.id).forEach(sp => ui.openProjTodosIds.add(sp.id));
+      }
       renderTodosTab();
     });
     const itemsEl = group.querySelector('.proj-todos-items');
@@ -2587,18 +2615,59 @@ function renderSidebar() {
     statList.innerHTML = '';
     const planDay = getDay(ui.currentDate);
     const planSched = planDay.schedule || {}, planDoneSet = new Set(planDay.completed || []);
-    const projStats = [...state.projects, ARCHIVED_PROJ]
+    const projStatsFlat = [...state.projects, ARCHIVED_PROJ]
       .map(p => ({
         p,
         planned: Object.values(planSched).filter(id => id === p.id).length,
         completed: Object.entries(planSched).filter(([i, id]) => id === p.id && planDoneSet.has(+i)).length
       }))
       .filter(x => x.planned > 0);
-    if (projStats.length) {
-      const totalPlanned = projStats.reduce((s, x) => s + x.planned, 0);
+
+    if (projStatsFlat.length) {
+      // Top-level aggregated bar
+      const sidebarTopLevel = state.projects.filter(p => !p.parentId);
+      const topGroups = sidebarTopLevel.map(p => {
+        const own = projStatsFlat.find(x => x.p.id === p.id) || { planned: 0, completed: 0 };
+        const kids = state.projects.filter(sp => sp.parentId === p.id)
+          .map(sp => projStatsFlat.find(x => x.p.id === sp.id)).filter(Boolean);
+        return { p, planned: own.planned + kids.reduce((s, c) => s + c.planned, 0), completed: own.completed + kids.reduce((s, c) => s + c.completed, 0) };
+      }).filter(g => g.planned > 0);
+      const archivedStat = projStatsFlat.find(x => x.p.id === '__archived__');
+      if (archivedStat) topGroups.push({ p: ARCHIVED_PROJ, planned: archivedStat.planned, completed: archivedStat.completed });
+
+      if (topGroups.length > 0) {
+        const topLabel = document.createElement('div');
+        topLabel.style.cssText = 'font-family:"DM Mono",monospace;font-size:8px;color:var(--faint);letter-spacing:.08em;margin-bottom:4px;text-transform:uppercase';
+        topLabel.textContent = 'By Area';
+        statList.appendChild(topLabel);
+        const totalTop = topGroups.reduce((s, g) => s + g.planned, 0);
+        const topBar = document.createElement('div');
+        topBar.className = 'stacked-bar';
+        topBar.style.marginBottom = '4px';
+        topGroups.forEach(({ p, planned, completed }) => {
+          const pct = totalTop > 0 ? (planned / totalTop * 100) : 0;
+          const compPct = planned > 0 ? (completed / planned * 100) : 0;
+          const seg = document.createElement('div');
+          seg.className = 'stacked-bar-seg';
+          seg.style.cssText = `width:${pct}%;background:${p.color}30;position:relative;overflow:hidden`;
+          seg.title = `${p.emoji} ${p.name}: ${completed}/${planned}`;
+          const fill = document.createElement('div');
+          fill.style.cssText = `position:absolute;left:0;top:0;height:100%;width:${compPct}%;background:${p.color}`;
+          seg.appendChild(fill);
+          topBar.appendChild(seg);
+        });
+        statList.appendChild(topBar);
+      }
+
+      // Detailed per-project bar with hierarchy
+      const totalPlanned = projStatsFlat.reduce((s, x) => s + x.planned, 0);
+      const detailLabel = document.createElement('div');
+      detailLabel.style.cssText = 'font-family:"DM Mono",monospace;font-size:8px;color:var(--faint);letter-spacing:.08em;margin-bottom:4px;margin-top:6px;text-transform:uppercase';
+      detailLabel.textContent = 'By Project';
+      statList.appendChild(detailLabel);
       const bar = document.createElement('div');
       bar.className = 'stacked-bar';
-      projStats.forEach(({ p, planned, completed }) => {
+      projStatsFlat.forEach(({ p, planned, completed }) => {
         const pct = totalPlanned > 0 ? (planned / totalPlanned * 100) : 0;
         const compPct = planned > 0 ? (completed / planned * 100) : 0;
         const seg = document.createElement('div');
@@ -2613,12 +2682,28 @@ function renderSidebar() {
       statList.appendChild(bar);
       const legend = document.createElement('div');
       legend.className = 'stacked-bar-legend';
-      projStats.forEach(({ p, planned, completed }) => {
+      legend.style.marginTop = '6px';
+      // Show in hierarchy order — use topGroups so areas appear even when only sub-projects are scheduled
+      topGroups.forEach(({ p, planned: gPlanned, completed: gCompleted }) => {
         const item = document.createElement('div');
         item.className = 'stacked-bar-legend-item';
-        item.innerHTML = `<span class="stacked-bar-legend-dot" style="background:${p.color}"></span><span style="color:${p.color}">${p.emoji} ${p.name}</span><span class="stacked-bar-legend-pct">${completed}/${planned}</span>`;
+        item.innerHTML = `<span class="stacked-bar-legend-dot" style="background:${p.color}"></span><span style="color:${p.color}">${p.emoji} ${p.name}</span><span class="stacked-bar-legend-pct">${gCompleted}/${gPlanned}</span>`;
         legend.appendChild(item);
+        state.projects.filter(sp => sp.parentId === p.id).forEach(sp => {
+          const spStat = projStatsFlat.find(x => x.p.id === sp.id);
+          if (!spStat) return;
+          const childItem = document.createElement('div');
+          childItem.className = 'stacked-bar-legend-item stacked-bar-legend-child';
+          childItem.innerHTML = `<span style="color:var(--faint);margin-right:3px;font-size:9px">└</span><span class="stacked-bar-legend-dot" style="background:${sp.color}"></span><span style="color:${sp.color}">${sp.emoji} ${sp.name}</span><span class="stacked-bar-legend-pct">${spStat.completed}/${spStat.planned}</span>`;
+          legend.appendChild(childItem);
+        });
       });
+      if (archivedStat) {
+        const item = document.createElement('div');
+        item.className = 'stacked-bar-legend-item';
+        item.innerHTML = `<span class="stacked-bar-legend-dot" style="background:${ARCHIVED_PROJ.color}"></span><span style="color:${ARCHIVED_PROJ.color}">${ARCHIVED_PROJ.emoji} ${ARCHIVED_PROJ.name}</span><span class="stacked-bar-legend-pct">${archivedStat.completed}/${archivedStat.planned}</span>`;
+        legend.appendChild(item);
+      }
       statList.appendChild(legend);
     }
   }
@@ -3050,42 +3135,87 @@ function renderGamePanel() {
   // Per-project today: planned vs completed — stacked bar
   const todaySched = day.schedule || {}, todayDoneSet = new Set(day.completed || []);
   const allTodayProjs = [...state.projects, ARCHIVED_PROJ];
-  const projToday = allTodayProjs
+  const projTodayFlat = allTodayProjs
     .map(p => ({
       p,
       planned: Object.values(todaySched).filter(id => id === p.id).length,
       completed: Object.entries(todaySched).filter(([i, id]) => id === p.id && todayDoneSet.has(+i)).length
     }))
     .filter(x => x.planned > 0);
+
+  // Build top-level groups for today
+  const todayTopLevel = state.projects.filter(p => !p.parentId);
+  const projTodayGroups = todayTopLevel.map(p => {
+    const own = projTodayFlat.find(x => x.p.id === p.id) || { p, planned: 0, completed: 0 };
+    const children = state.projects
+      .filter(sp => sp.parentId === p.id)
+      .map(sp => projTodayFlat.find(x => x.p.id === sp.id))
+      .filter(Boolean);
+    const totalPlanned = own.planned + children.reduce((s, c) => s + c.planned, 0);
+    const totalCompleted = own.completed + children.reduce((s, c) => s + c.completed, 0);
+    return { p, own, children, totalPlanned, totalCompleted };
+  }).filter(g => g.totalPlanned > 0);
+  // Add archived if scheduled
+  const archivedToday = projTodayFlat.find(x => x.p.id === '__archived__');
+  if (archivedToday) projTodayGroups.push({ p: ARCHIVED_PROJ, own: archivedToday, children: [], totalPlanned: archivedToday.planned, totalCompleted: archivedToday.completed });
+
   const projSection = document.getElementById('proj-stats-section');
   projSection.innerHTML = '';
-  if (projToday.length) {
-    const totalPlanned = projToday.reduce((s, x) => s + x.planned, 0);
-    // Stacked bar: each segment = project's planned share; completed shown solid, remaining translucent
-    const bar = document.createElement('div');
-    bar.className = 'stacked-bar';
-    bar.style.marginBottom = '8px';
-    projToday.forEach(({ p, planned, completed }) => {
-      const pct = totalPlanned > 0 ? (planned / totalPlanned * 100) : 0;
-      const compPct = planned > 0 ? (completed / planned * 100) : 0;
-      const seg = document.createElement('div');
-      seg.className = 'stacked-bar-seg';
-      seg.style.cssText = `width:${pct}%;background:${p.color}30;position:relative;overflow:hidden`;
-      seg.title = `${p.emoji} ${p.name}: ${completed}/${planned}`;
-      const fill = document.createElement('div');
-      fill.style.cssText = `position:absolute;left:0;top:0;height:100%;width:${compPct}%;background:${p.color}`;
-      seg.appendChild(fill);
-      bar.appendChild(seg);
-    });
-    projSection.appendChild(bar);
-    // Legend
+  const todayProjHeader = document.getElementById('today-by-proj-header');
+  if (todayProjHeader) todayProjHeader.style.display = projTodayGroups.length ? '' : 'none';
+
+  if (projTodayGroups.length) {
+    const grandTotal = projTodayGroups.reduce((s, g) => s + g.totalPlanned, 0);
+    const makeBar = (items, getP, getPlanned, getCompleted, total) => {
+      const b = document.createElement('div');
+      b.className = 'stacked-bar';
+      b.style.marginBottom = '4px';
+      items.forEach(item => {
+        const pct = total > 0 ? (getPlanned(item) / total * 100) : 0;
+        const compPct = getPlanned(item) > 0 ? (getCompleted(item) / getPlanned(item) * 100) : 0;
+        const p = getP(item);
+        const seg = document.createElement('div');
+        seg.className = 'stacked-bar-seg';
+        seg.style.cssText = `width:${pct}%;background:${p.color}30;position:relative;overflow:hidden`;
+        seg.title = `${p.emoji} ${p.name}: ${getCompleted(item)}/${getPlanned(item)}`;
+        const fill = document.createElement('div');
+        fill.style.cssText = `position:absolute;left:0;top:0;height:100%;width:${compPct}%;background:${p.color}`;
+        seg.appendChild(fill);
+        b.appendChild(seg);
+      });
+      return b;
+    };
+
+    // Bar 1 — by area (top-level)
+    const areaLabel = document.createElement('div');
+    areaLabel.style.cssText = 'font-family:"DM Mono",monospace;font-size:8px;color:var(--faint);letter-spacing:.08em;margin-bottom:3px;text-transform:uppercase';
+    areaLabel.textContent = 'By Area';
+    projSection.appendChild(areaLabel);
+    projSection.appendChild(makeBar(projTodayGroups, g => g.p, g => g.totalPlanned, g => g.totalCompleted, grandTotal));
+
+    // Bar 2 — by individual project
+    const projLabel = document.createElement('div');
+    projLabel.style.cssText = 'font-family:"DM Mono",monospace;font-size:8px;color:var(--faint);letter-spacing:.08em;margin-bottom:3px;margin-top:6px;text-transform:uppercase';
+    projLabel.textContent = 'By Project';
+    projSection.appendChild(projLabel);
+    const flatTotal = projTodayFlat.reduce((s, x) => s + x.planned, 0);
+    projSection.appendChild(makeBar(projTodayFlat, x => x.p, x => x.planned, x => x.completed, flatTotal));
+
+    // Hierarchical legend
     const legend = document.createElement('div');
     legend.className = 'stacked-bar-legend';
-    projToday.forEach(({ p, planned, completed }) => {
+    legend.style.marginTop = '6px';
+    projTodayGroups.forEach(({ p, children, totalPlanned, totalCompleted }) => {
       const item = document.createElement('div');
       item.className = 'stacked-bar-legend-item';
-      item.innerHTML = `<span class="stacked-bar-legend-dot" style="background:${p.color}"></span><span style="color:${p.color}">${p.emoji} ${p.name}</span><span class="stacked-bar-legend-pct">${completed}/${planned}</span>`;
+      item.innerHTML = `<span class="stacked-bar-legend-dot" style="background:${p.color}"></span><span style="color:${p.color}">${p.emoji} ${p.name}</span><span class="stacked-bar-legend-pct">${totalCompleted}/${totalPlanned}</span>`;
       legend.appendChild(item);
+      children.forEach(({ p: sp, planned, completed }) => {
+        const childItem = document.createElement('div');
+        childItem.className = 'stacked-bar-legend-item stacked-bar-legend-child';
+        childItem.innerHTML = `<span style="color:var(--faint);margin-right:3px;font-size:9px">└</span><span class="stacked-bar-legend-dot" style="background:${sp.color}"></span><span style="color:${sp.color}">${sp.emoji} ${sp.name}</span><span class="stacked-bar-legend-pct">${completed}/${planned}</span>`;
+        legend.appendChild(childItem);
+      });
     });
     projSection.appendChild(legend);
   }
@@ -4044,7 +4174,8 @@ function getLast30Days() {
 
 function computeMomentumAtDay(ds) {
   // Recompute momentum up to (and including) ds
-  const allDays = Object.keys(state.days).filter(d => !isWeekend(d) && !state.days[d]?.timeOff && d <= ds).sort();
+  const firstDay = firstRecordedDay();
+  const allDays = Object.keys(state.days).filter(d => !isWeekend(d) && !state.days[d]?.timeOff && d <= ds && (!firstDay || d >= firstDay)).sort();
   let m = 100;
   for (const d of allDays) {
     const done = (state.days[d].completed || []).length;
@@ -4072,7 +4203,8 @@ function renderStats() {
 
   // Time off stats
   const today = todayStr();
-  const allPastDays = Object.entries(state.days).filter(([ds]) => ds <= today);
+  const firstDay = firstRecordedDay();
+  const allPastDays = Object.entries(state.days).filter(([ds]) => ds <= today && (!firstDay || ds >= firstDay));
   const timeOffDays = allPastDays.filter(([, d]) => d.timeOff === true).length;
   const workedDays = allPastDays.filter(([, d]) => !d.timeOff && countDoneBlocks(d) > 0).length;
   const totalTracked = allPastDays.length;
@@ -4147,7 +4279,8 @@ function renderStats() {
     // Count blocks per project id
     const blocksByProjId = {};
     [...state.projects, ARCHIVED_PROJ].forEach(p => { blocksByProjId[p.id] = 0; });
-    Object.values(state.days).forEach(d => {
+    Object.entries(state.days).forEach(([ds, d]) => {
+      if (firstDay && ds < firstDay) return;
       Object.values(d.schedule || {}).forEach(pid => {
         if (pid in blocksByProjId) blocksByProjId[pid]++;
       });
@@ -4216,6 +4349,7 @@ function renderStats() {
     let meetingCount = 0, nonMeetingCount = 0;
     Object.entries(state.days).forEach(([ds, d]) => {
       if (ds > today) return;
+      if (firstDay && ds < firstDay) return;
       (d.completed || []).forEach(idx => {
         if ((d.blockNotes || {})[idx]?.meeting) meetingCount++;
         else nonMeetingCount++;
@@ -4279,7 +4413,7 @@ function renderNotesTab() {
       const note = (bn.note || '').trim();
       const todos = (bn.todos || []);
       const meeting = bn.meeting === true;
-      if (!note && !meeting) return;
+      if (!note) return;
       const projId = sched[idx];
       if (!projId) return;
       if (!projEntries[projId]) projEntries[projId] = [];
@@ -4297,16 +4431,24 @@ function renderNotesTab() {
     });
   });
 
-  // Collect projects that have notes, sort by note count desc
-  const projs = state.projects.filter(p => projEntries[p.id] && projEntries[p.id].length);
+  // Helper: get all entries for a project including its children
+  const getEntriesForProj = (projId) => {
+    const own = (projEntries[projId] || []).map(e => ({ ...e, projId }));
+    const children = state.projects.filter(sp => sp.parentId === projId);
+    const childEntries = children.flatMap(sp => (projEntries[sp.id] || []).map(e => ({ ...e, projId: sp.id })));
+    return [...own, ...childEntries];
+  };
 
-  // Determine selected project
+  // Collect projects that have notes (own or children)
+  const projs = state.projects.filter(p => getEntriesForProj(p.id).length > 0);
   const allCount = Object.values(projEntries).reduce((s, arr) => s + arr.length, 0);
-  if (!ui.notesTabProjId || (ui.notesTabProjId !== '__all__' && !projEntries[ui.notesTabProjId])) {
+
+  // Validate selected project still has entries
+  if (!ui.notesTabProjId || (ui.notesTabProjId !== '__all__' && !getEntriesForProj(ui.notesTabProjId).length)) {
     ui.notesTabProjId = projs.length ? '__all__' : null;
   }
 
-  // Render project list
+  // Render project list in hierarchy
   projList.innerHTML = '<div class="section-label" style="margin-bottom:10px">Projects</div>';
   if (!projs.length) {
     projList.innerHTML += '<div style="font-family:\'DM Mono\',monospace;font-size:10px;color:var(--faint);padding:6px 4px">No notes yet.<br>Add notes to blocks in the Plan tab.</div>';
@@ -4318,20 +4460,33 @@ function renderNotesTab() {
       <span class="notes-tab-proj-count">${allCount}</span>`;
     allBtn.onclick = () => { ui.notesTabProjId = '__all__'; renderNotesTab(); };
     projList.appendChild(allBtn);
+
+    // Build hierarchical list
+    const notesTopLevel = state.projects.filter(p => !p.parentId && getEntriesForProj(p.id).length > 0);
+    notesTopLevel.forEach(p => {
+      const count = getEntriesForProj(p.id).length;
+      const isActive = p.id === ui.notesTabProjId;
+      const btn = document.createElement('button');
+      btn.className = 'notes-tab-proj-btn' + (isActive ? ' active' : '');
+      btn.innerHTML = `<div class="notes-tab-proj-dot" style="background:${p.color}"></div>
+        <span class="notes-tab-proj-name">${p.emoji} ${p.name}</span>
+        <span class="notes-tab-proj-count">${count}</span>`;
+      btn.onclick = () => { ui.notesTabProjId = p.id; renderNotesTab(); };
+      projList.appendChild(btn);
+      // Child projects
+      state.projects.filter(sp => sp.parentId === p.id && (projEntries[sp.id] || []).length > 0).forEach(sp => {
+        const spCount = (projEntries[sp.id] || []).length;
+        const spActive = sp.id === ui.notesTabProjId;
+        const spBtn = document.createElement('button');
+        spBtn.className = 'notes-tab-proj-btn notes-tab-proj-btn-child' + (spActive ? ' active' : '');
+        spBtn.innerHTML = `<span class="notes-proj-child-indent">└</span><div class="notes-tab-proj-dot" style="background:${sp.color}"></div>
+          <span class="notes-tab-proj-name">${sp.emoji} ${sp.name}</span>
+          <span class="notes-tab-proj-count">${spCount}</span>`;
+        spBtn.onclick = () => { ui.notesTabProjId = sp.id; renderNotesTab(); };
+        projList.appendChild(spBtn);
+      });
+    });
   }
-  projs.forEach(p => {
-    const count = projEntries[p.id].length;
-    const btn = document.createElement('button');
-    btn.className = 'notes-tab-proj-btn' + (p.id === ui.notesTabProjId ? ' active' : '');
-    btn.innerHTML = `<div class="notes-tab-proj-dot" style="background:${p.color}"></div>
-      <span class="notes-tab-proj-name">${p.emoji} ${p.name}</span>
-      <span class="notes-tab-proj-count">${count}</span>`;
-    btn.onclick = () => {
-      ui.notesTabProjId = p.id;
-      renderNotesTab();
-    };
-    projList.appendChild(btn);
-  });
 
   // Render filter bar — stars row + tags row
   const filterBar = document.getElementById('notes-tab-filter-bar');
@@ -4397,7 +4552,7 @@ function renderNotesTab() {
   const isAll = ui.notesTabProjId === '__all__';
   const rawEntries = isAll
     ? Object.entries(projEntries).flatMap(([pid, arr]) => arr.map(e => ({ ...e, projId: pid })))
-    : (projEntries[ui.notesTabProjId] || []).map(e => ({ ...e, projId: ui.notesTabProjId }));
+    : getEntriesForProj(ui.notesTabProjId);
   const allEntries = rawEntries.slice().sort((a, b) => b.date.localeCompare(a.date) || b.blockIdx - a.blockIdx);
   const entries = allEntries
     .filter(e => ui.notesTabImportanceFilter === 0 || (e.importance || 0) === ui.notesTabImportanceFilter)

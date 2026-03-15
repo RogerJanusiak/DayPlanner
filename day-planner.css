@@ -1797,6 +1797,20 @@ html,body {
   border-radius:11px;
   overflow:hidden;
 }
+.proj-todos-group-child {
+  margin-left:16px;
+  margin-top:-10px;
+  border-top:none;
+  border-top-left-radius:0;
+  border-top-right-radius:0;
+  border-left:2px solid var(--border2);
+}
+.proj-todos-child-indent {
+  color:var(--faint);
+  font-size:11px;
+  margin-right:4px;
+  flex-shrink:0;
+}
 .proj-todos-header {
   display:flex;
   align-items:center;
@@ -2382,6 +2396,17 @@ html,body {
 .notes-tab-proj-btn:hover {
   background:var(--bg3);
   color:var(--text);
+}
+.notes-tab-proj-btn-child {
+  padding-left:8px;
+  border-left:2px solid var(--border2);
+  margin-left:8px;
+}
+.notes-proj-child-indent {
+  color:var(--faint);
+  font-size:10px;
+  margin-right:3px;
+  flex-shrink:0;
 }
 .notes-tab-proj-btn.active {
   background:var(--bg3);
