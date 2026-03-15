@@ -69,6 +69,7 @@ let ui = {
   notesTabProjId: null, // selected project in Notes tab
   notesTabImportanceFilter: 0, // 0=All, 1-5=exact star rating
   notesTabTagFilter: [], // [] = All, else array of selected tag IDs
+  notesTabMeetingFilter: false, // false=All, true=meetings only
   focusBlock: null, // block idx shown in focus view
   notesLivePreview: true,
   soundMuted: false,
@@ -237,7 +238,8 @@ function computeStreak() {
 // Momentum / decay: starts at 100, decays by 10 each weekday the goal is missed,
 // restores by 5 each goal-met weekday. Clamps 0-100.
 function computeMomentum() {
-  const days = Object.keys(state.days).filter(ds => !isWeekend(ds) && !state.days[ds]?.timeOff).sort();
+  const today = todayStr();
+  const days = Object.keys(state.days).filter(ds => ds <= today && !isWeekend(ds) && !state.days[ds]?.timeOff).sort();
   let m = 100;
   for (const ds of days) {
     const done = countDoneBlocks(state.days[ds]);
@@ -249,7 +251,8 @@ function computeMomentum() {
 
 function computeStats() {
   // Only non-timeoff weekdays count for streak
-  const allDays = Object.entries(state.days);
+  const today = todayStr();
+  const allDays = Object.entries(state.days).filter(([ds]) => ds <= today);
   const activeDays = allDays.filter(([ds, d]) => !d.timeOff && countDoneBlocks(d) > 0);
   const total = activeDays.reduce((s, [, d]) => s + countDoneBlocks(d), 0);
   const avg = activeDays.length ? (total / activeDays.length).toFixed(1) : '0.0';
@@ -477,6 +480,7 @@ function toYaml() {
     L.push(`    name: ${yStr(p.name)}`);
     L.push(`    emoji: ${yStr(p.emoji)}`);
     L.push(`    color: ${yStr(p.color)}`);
+    if (p.parentId) L.push(`    parentId: ${yStr(p.parentId)}`);
   });
   L.push('');
 
@@ -532,10 +536,11 @@ function toYaml() {
       });
     }
 
-    // blockNotes — includes note, todos (with ids), and projTodos pins
+    // blockNotes — includes note, todos (with ids), projTodos pins, importance, tags, meeting
     const notes = data.blockNotes || {};
     const noteEntries = Object.entries(notes).filter(([, n]) =>
-      (n.note || '').trim() || (n.todos || []).length || (n.projTodos || []).length
+      (n.note || '').trim() || (n.todos || []).length || (n.projTodos || []).length ||
+      n.importance || (n.tags || []).length || n.meeting
     );
     if (noteEntries.length) {
       L.push('    blockNotes:');
@@ -543,6 +548,8 @@ function toYaml() {
         const [h, half] = blockToTime(+idx);
         L.push(`      ${idx}:  # ${formatTime(h,half)}`);
         if (n.importance) L.push(`        importance: ${n.importance}`);
+        if (n.meeting) L.push('        meeting: true');
+        if ((n.tags || []).length) L.push(`        tags: [${n.tags.map(yStr).join(', ')}]`);
         if ((n.note || '').trim()) L.push(`        note: ${yStr(n.note)}`);
         if ((n.todos || []).length) {
           L.push('        todos:');
@@ -646,6 +653,8 @@ function parseYaml(text) {
         if (em) curProj.emoji = em[1];
         const cm = trim.match(/^color:\s*"([^"]*)"/);
         if (cm) curProj.color = cm[1];
+        const pm = trim.match(/^parentId:\s*"([^"]*)"/);
+        if (pm) curProj.parentId = pm[1];
       }
       continue;
     }
@@ -813,6 +822,16 @@ function parseYaml(text) {
             const im = trim.match(/^importance:\s*(\d)/);
             if (im) {
               result.days[curDay].blockNotes[curNoteIdx].importance = +im[1];
+              continue;
+            }
+            if (trim === 'meeting: true') {
+              result.days[curDay].blockNotes[curNoteIdx].meeting = true;
+              continue;
+            }
+            const tgm = trim.match(/^tags:\s*\[([^\]]*)\]/);
+            if (tgm) {
+              result.days[curDay].blockNotes[curNoteIdx].tags = tgm[1]
+                .split(',').map(s => s.trim().replace(/^"|"$/g, '')).filter(Boolean);
               continue;
             }
           }
@@ -1535,6 +1554,10 @@ function openNotesModal(blockIdx, ds, notesOnly) {
       tagRenameRow.style.display = 'none';
     }
   };
+  // Meeting toggle
+  const meetingBtn = document.getElementById('notes-meeting-btn');
+  meetingBtn.classList.toggle('active', !!ex.meeting);
+  meetingBtn.onclick = () => meetingBtn.classList.toggle('active');
   // Markdown edit/preview setup
   const modal = document.getElementById('notes-modal');
   const textarea = document.getElementById('notes-textarea');
@@ -1613,6 +1636,7 @@ function saveNotesModal() {
   const note = document.getElementById('notes-textarea').value;
   const importance = [...document.querySelectorAll('#star-picker .star-btn')].filter(b => b.classList.contains('active')).length || null;
   const tags = [...document.querySelectorAll('#notes-tag-picker .tag-pill-btn.active')].map(b => b.dataset.tagId);
+  const meeting = document.getElementById('notes-meeting-btn').classList.contains('active') || undefined;
   const day = getDay(ds);
   if (!day.blockNotes) day.blockNotes = {};
   const existingProjTodos = (day.blockNotes[blockIdx] || {}).projTodos || [];
@@ -1621,7 +1645,8 @@ function saveNotesModal() {
     todos: [],
     projTodos: existingProjTodos,
     importance,
-    tags: tags.length ? tags : undefined
+    tags: tags.length ? tags : undefined,
+    meeting: meeting || undefined
   };
   setDay(ds, day);
   save();
@@ -2203,12 +2228,23 @@ function renderSettingsPanel() {
   const projList = document.createElement('div');
   projList.id = 'settings-proj-list';
 
-  let spDragId = null;
+  let spDragId = null, spDragZone = null;
   function renderProjList() {
     projList.innerHTML = '';
-    state.projects.forEach(p => {
+    // Build display order: top-level projects with children indented beneath them
+    const topLevel = state.projects.filter(p => !p.parentId);
+    const displayOrder = [];
+    topLevel.forEach(p => {
+      displayOrder.push({ proj: p, indent: false });
+      state.projects.filter(sp => sp.parentId === p.id).forEach(sp => displayOrder.push({ proj: sp, indent: true }));
+    });
+    // Orphaned sub-projects (parent deleted)
+    state.projects.filter(p => p.parentId && !state.projects.find(tp => tp.id === p.parentId))
+      .forEach(p => displayOrder.push({ proj: p, indent: false }));
+
+    displayOrder.forEach(({ proj: p, indent }) => {
       const row = document.createElement('div');
-      row.className = 'settings-proj-row';
+      row.className = 'settings-proj-row' + (indent ? ' settings-proj-row-child' : '');
       if (ui.editingProjId === p.id) {
         row.innerHTML = `<div style="display:flex;gap:6px;align-items:center;width:100%">
           <input class="mini-input emoji-input" style="width:34px;font-size:13px" value="${escAttr(p.emoji)}" id="sp-ee-${p.id}">
@@ -2243,10 +2279,13 @@ function renderSettingsPanel() {
       } else {
         row.draggable = true;
         row.dataset.projId = p.id;
-        row.innerHTML = `<span class="sp-drag-handle">⠿</span>
+        const hasChildren = state.projects.some(sp => sp.parentId === p.id);
+        const ungroupBtn = indent ? `<button class="icon-btn" data-ungroup="${p.id}" title="Make top-level">↑</button>` : '';
+        row.innerHTML = `${indent ? '<span class="sp-child-indent">└</span>' : '<span class="sp-drag-handle">⠿</span>'}
           <div class="proj-color-dot" style="background:${p.color}"></div>
-          <div class="proj-name-display" style="color:${p.color};flex:1">${p.emoji} ${p.name}</div>
+          <div class="proj-name-display" style="color:${p.color};flex:1">${p.emoji} ${p.name}${hasChildren ? ' <span style="font-size:9px;color:var(--faint)">(parent)</span>' : ''}</div>
           <div class="proj-actions" style="opacity:1;display:flex;gap:4px">
+            ${ungroupBtn}
             <button class="icon-btn" data-edit="${p.id}">✎</button>
             <button class="icon-btn danger" data-del="${p.id}">✕</button>
           </div>`;
@@ -2258,34 +2297,58 @@ function renderSettingsPanel() {
         });
         row.addEventListener('dragend', () => {
           spDragId = null;
-          document.querySelectorAll('.settings-proj-row').forEach(r => r.classList.remove('sp-drag-over', 'sp-dragging'));
+          spDragZone = null;
+          document.querySelectorAll('.settings-proj-row').forEach(r => r.classList.remove('sp-drag-over', 'sp-dragging', 'sp-drop-inside'));
         });
         row.addEventListener('dragover', e => {
           if (!spDragId || spDragId === p.id) return;
           e.preventDefault();
-          document.querySelectorAll('.settings-proj-row').forEach(r => r.classList.remove('sp-drag-over'));
-          row.classList.add('sp-drag-over');
+          document.querySelectorAll('.settings-proj-row').forEach(r => r.classList.remove('sp-drag-over', 'sp-drop-inside'));
+          // Middle 40% of a top-level project = nest; edges = reorder
+          const rect = row.getBoundingClientRect();
+          const ratio = (e.clientY - rect.top) / rect.height;
+          const canNest = !p.parentId && !indent && ratio > 0.3 && ratio < 0.7
+            && !state.projects.some(sp => sp.parentId === spDragId); // can't nest a parent
+          if (canNest) {
+            row.classList.add('sp-drop-inside');
+            spDragZone = 'inside';
+          } else {
+            row.classList.add('sp-drag-over');
+            spDragZone = ratio < 0.5 ? 'before' : 'after';
+          }
         });
         row.addEventListener('drop', e => {
           e.preventDefault();
           if (!spDragId || spDragId === p.id) return;
-          const fromIdx = state.projects.findIndex(x => x.id === spDragId);
-          const toIdx = state.projects.findIndex(x => x.id === p.id);
-          if (fromIdx < 0 || toIdx < 0) return;
-          const [moved] = state.projects.splice(fromIdx, 1);
-          state.projects.splice(toIdx, 0, moved);
+          const draggedProj = state.projects.find(x => x.id === spDragId);
+          if (!draggedProj) return;
+          if (spDragZone === 'inside' && !p.parentId) {
+            draggedProj.parentId = p.id;
+          } else {
+            const fromIdx = state.projects.findIndex(x => x.id === spDragId);
+            const toIdx   = state.projects.findIndex(x => x.id === p.id);
+            if (fromIdx < 0 || toIdx < 0) return;
+            const [moved] = state.projects.splice(fromIdx, 1);
+            const newTo   = state.projects.findIndex(x => x.id === p.id);
+            state.projects.splice(spDragZone === 'after' ? newTo + 1 : newTo, 0, moved);
+          }
           save();
           renderAll();
           renderProjList();
         });
+        row.querySelector('[data-ungroup]')?.addEventListener('click', () => {
+          delete p.parentId;
+          save(); renderAll(); renderProjList();
+        });
         row.querySelector('[data-edit]').onclick = () => { ui.editingProjId = p.id; renderProjList(); };
         row.querySelector('[data-del]').onclick = () => {
           if (confirm(`Delete "${p.name}"?`)) {
-            const deletedId = p.id;
-            state.projects = state.projects.filter(x => x.id !== deletedId);
+            // Un-nest children before deleting parent
+            state.projects.filter(sp => sp.parentId === p.id).forEach(sp => delete sp.parentId);
+            state.projects = state.projects.filter(x => x.id !== p.id);
             Object.values(state.days).forEach(day => {
               const sched = day.schedule || {};
-              Object.keys(sched).forEach(k => { if (sched[k] === deletedId) sched[k] = '__archived__'; });
+              Object.keys(sched).forEach(k => { if (sched[k] === p.id) sched[k] = '__archived__'; });
             });
             save();
             renderAll();
@@ -2490,12 +2553,12 @@ function renderSettingsPanel() {
 function renderSidebar() {
   const list = document.getElementById('proj-list');
   list.innerHTML = '';
-  state.projects.forEach(p => {
+  const addSidebarRow = (p, isChild) => {
     const row = document.createElement('div');
-    row.className = 'proj-row';
+    row.className = 'proj-row' + (isChild ? ' proj-row-child' : '');
     row.style.background = p.color + '18';
     row.draggable = true;
-    row.innerHTML = `<div class="proj-color-dot" style="background:${p.color}"></div>
+    row.innerHTML = `${isChild ? '<span class="proj-child-indent">└</span>' : ''}<div class="proj-color-dot" style="background:${p.color}"></div>
       <div class="proj-name-display" style="color:${p.color}">${p.emoji} ${p.name}</div>`;
     list.appendChild(row);
     row.addEventListener('dragstart', e => {
@@ -2509,7 +2572,15 @@ function renderSidebar() {
       row.classList.remove('proj-dragging');
       ui.dragProjId = null;
     });
+  };
+  const topLevel = state.projects.filter(p => !p.parentId);
+  topLevel.forEach(p => {
+    addSidebarRow(p, false);
+    state.projects.filter(sp => sp.parentId === p.id).forEach(sp => addSidebarRow(sp, true));
   });
+  // Orphaned sub-projects
+  state.projects.filter(p => p.parentId && !state.projects.find(tp => tp.id === p.parentId))
+    .forEach(p => addSidebarRow(p, false));
   // By project stats for current plan date
   const statList = document.getElementById('proj-stat-list');
   if (statList) {
@@ -2655,6 +2726,7 @@ function renderScheduleGrid() {
     sched = day.schedule || {},
     done = new Set(day.completed || []);
   const blockSpan = day.blockSpan || {};
+  const blockNotes = day.blockNotes || {};
   // Build set of slots that are spanned (should not be rendered as their own row)
   const spannedSlots = new Set();
   Object.entries(blockSpan).forEach(([startIdx, span]) => {
@@ -2665,14 +2737,19 @@ function renderScheduleGrid() {
   const lastPlannedIdx = scheduledIdxs.length > 0 ? Math.max(...scheduledIdxs) : -1;
   const maxH = Math.min(23, 6 + Math.floor((lastPlannedIdx + 1) / 2));
   for (let h = 6; h <= maxH; h++) {
-    const labelRow = (h - 6) * 2 + 1;
-    const lbl = document.createElement('div');
-    lbl.className = 'hour-label';
-    lbl.textContent = String(h - 5).padStart(2, '0');
-    lbl.style.gridRow = `${labelRow} / ${labelRow + 2}`;
-    grid.appendChild(lbl);
     for (let half = 0; half < 2; half++) {
       const idx = (h - 6) * 2 + half;
+      const lblRow = (h - 6) * 2 + half + 1;
+      const lbl = document.createElement('div');
+      if (half === 0) {
+        lbl.className = 'hour-label';
+        lbl.textContent = String(h - 5);
+      } else {
+        lbl.className = 'hour-label hour-half-label';
+        lbl.textContent = ':30';
+      }
+      lbl.style.gridRow = String(lblRow);
+      grid.appendChild(lbl);
       // Skip slots that are part of a span (visually merged into the start slot)
       if (spannedSlots.has(idx)) continue;
       const projId = sched[idx],
@@ -2682,10 +2759,11 @@ function renderScheduleGrid() {
       const span = blockSpan[idx] || 1;
       const isCompleted = done.has(idx),
         isActive = ui.activeBlock === idx,
-        hasNotes = blockHasContent(idx);
+        hasNotes = blockHasContent(idx),
+        hasMeeting = (blockNotes[idx] || {}).meeting === true;
       const row = document.createElement('div');
       const baseClass = 'block-row ' + (half === 0 ? 'block-divider-solid' : 'block-divider-dashed');
-      row.className = baseClass + (span >= 2 ? ' block-row-1h' : '');
+      row.className = baseClass + (span >= 2 ? ' block-row-1h' : '') + (isCompleted ? ' block-row-completed' : '');
       row.id = `block-row-${idx}`;
       row.dataset.idx = idx;
       if (!readOnly && proj && !isArchived) {
@@ -2700,7 +2778,9 @@ function renderScheduleGrid() {
       if (!isBreak && !isArchived) bar.style.background = proj ? proj.color : 'var(--bg3)';
       if (isArchived) bar.style.background = 'repeating-linear-gradient(45deg,var(--bg3),var(--bg3) 3px,var(--faint) 3px,var(--faint) 6px)';
       bar.style.opacity = isCompleted ? '.35' : '1';
-      if (span >= 2) bar.style.height = '50px';
+      if (proj && !isBreak && !isArchived) {
+        row.style.background = proj.color + (isCompleted ? '0e' : '1a');
+      }
       row.appendChild(bar);
       const label = document.createElement('div');
       label.className = 'block-label';
@@ -2714,19 +2794,14 @@ function renderScheduleGrid() {
         nameLine.style.display = 'flex';
         nameLine.style.alignItems = 'center';
         nameLine.style.gap = '5px';
-        nameLine.innerHTML = `${proj.emoji} ${proj.name}`;
+        nameLine.innerHTML = `${proj.emoji} <span class="block-proj-name">${proj.name}</span>`;
         if (isCompleted) nameLine.innerHTML += ` <span class="badge-done">✓</span>`;
         if (isActive) nameLine.innerHTML += ` <span class="badge-active pulse">● active</span>`;
         if (hasNotes) nameLine.innerHTML += ` <span class="badge-notes" title="Notes">📝</span>`;
+        if (hasMeeting) nameLine.innerHTML += ` <span class="badge-meeting">📅 meeting</span>`;
         label.appendChild(nameLine);
-        // For 1-hour blocks, show time range + badge
-        if (span >= 2) {
-          const timeLine = document.createElement('div');
-          timeLine.style.cssText = 'font-size:9px;color:var(--faint);display:flex;align-items:center;gap:6px';
-          timeLine.innerHTML = `<span class="block-1h-badge">1h</span>`;
-          label.appendChild(timeLine);
-        }
       } else {
+        row.classList.add('block-row-empty');
         label.style.color = 'var(--faint)';
         label.textContent = '—';
       }
@@ -2887,6 +2962,7 @@ function renderTimerCard() {
   document.getElementById('t-planned').textContent = planned;
   document.getElementById('t-blocks').textContent = done;
   document.getElementById('t-hours').textContent = (done * .5).toFixed(1) + 'h';
+  document.getElementById('t-meetings').textContent = Object.values(day.blockNotes || {}).filter(bn => bn.meeting).length;
   if (ui.activeBlock !== null) {
     const proj = getProject((day.schedule || {})[ui.activeBlock]);
     document.getElementById('timer-project-name').textContent = proj ? `${proj.emoji} ${proj.name}` : 'Active block';
@@ -3254,6 +3330,28 @@ function renderBlockFocus() {
   } else {
     focusTimeEl.textContent = timeLabel;
     focusTimeEl.dataset.countdown = '';
+  }
+
+  // Meeting toggle + badge
+  const meetingBadgeEl = document.getElementById('block-focus-meeting-badge');
+  const focusMeetingBtn = document.getElementById('focus-meeting-btn');
+  const applyMeetingState = (val) => {
+    if (meetingBadgeEl) meetingBadgeEl.style.display = val ? '' : 'none';
+    if (focusMeetingBtn) focusMeetingBtn.classList.toggle('active', !!val);
+  };
+  applyMeetingState(bn.meeting);
+  if (focusMeetingBtn) {
+    focusMeetingBtn.onclick = () => {
+      const dayD = getDay(ds);
+      if (!dayD.blockNotes[blockIdx]) dayD.blockNotes[blockIdx] = { note: '', todos: [] };
+      const newVal = !(dayD.blockNotes[blockIdx].meeting === true);
+      dayD.blockNotes[blockIdx].meeting = newVal || undefined;
+      setDay(ds, dayD);
+      save();
+      applyMeetingState(newVal);
+      renderScheduleGrid();
+      renderTimerCard();
+    };
   }
 
   // ── Importance stars ──
@@ -3697,7 +3795,8 @@ function renderTimeline() {
     const isCompleted = done.has(idx),
       isActive = ui.activeBlock === idx;
     const hasNotes = blockHasContent(idx),
-      notes = (day.blockNotes || {})[idx];
+      notes = (day.blockNotes || {})[idx],
+      isMeeting = notes?.meeting === true;
     const block = document.createElement('div');
     block.className = 'tl-block' + (isActive ? ' tl-active' : '') + (isCompleted ? ' tl-done' : '');
     block.id = `tl-block-${idx}`;
@@ -3713,11 +3812,16 @@ function renderTimeline() {
         todoPreview = `${dt}/${tot} todos done`;
       }
     }
+    const [tlH, tlHalf] = blockToTime(idx);
+    const tlTime = formatTime(tlH, tlHalf);
     block.innerHTML = `<div class="tl-accent" style="background:${proj.color};opacity:${isCompleted?.3:1}"></div>
       <div class="tl-inner">
         <div class="tl-block-num">#${i + 1}</div>
         <div class="tl-info">
-          <div class="tl-proj-name" style="color:${isCompleted?'var(--faint)':proj.color}">${proj.emoji} ${proj.name} ${durationBadge}</div>
+          <div class="tl-proj-row">
+            <span class="tl-time">${tlTime}</span>
+            <div class="tl-proj-name" style="color:${isCompleted?'var(--faint)':proj.color}">${proj.emoji} ${proj.name} ${durationBadge}${isMeeting?' <span class="badge-meeting">📅 meeting</span>':''}</div>
+          </div>
           ${notePreview?`<div class="tl-note-preview">${notePreview}</div>`:''}
           ${todoPreview?`<div class="tl-todo-preview">📋 ${todoPreview}</div>`:''}
         </div>
@@ -3898,7 +4002,7 @@ function computeTodoStats() {
   let completed = 0,
     active = 0,
     progressLogs = 0,
-    dailyDone = 0;
+    meetings = 0;
   Object.values(state.projectTodos || {}).forEach(todos => {
     todos.forEach(t => {
       if (t.done) completed++;
@@ -3906,19 +4010,17 @@ function computeTodoStats() {
       progressLogs += (t.history || []).filter(h => h.type === 'progress').length;
     });
   });
-  // daily todos done (from blockNotes)
+  // meetings logged (from blockNotes)
   Object.values(state.days || {}).forEach(d => {
     Object.values(d.blockNotes || {}).forEach(bn => {
-      (bn.todos || []).forEach(t => {
-        if (t.done) dailyDone++;
-      });
+      if (bn.meeting) meetings++;
     });
   });
   return {
     completed,
     active,
     progressLogs,
-    dailyDone
+    meetings
   };
 }
 
@@ -3966,7 +4068,20 @@ function renderStats() {
   document.getElementById('sc-todos-total').textContent = ts.completed;
   document.getElementById('sc-todos-active').textContent = ts.active;
   document.getElementById('sc-todos-progress').textContent = ts.progressLogs;
-  document.getElementById('sc-daily-todos').textContent = ts.dailyDone;
+  document.getElementById('sc-meetings').textContent = ts.meetings;
+
+  // Time off stats
+  const today = todayStr();
+  const allPastDays = Object.entries(state.days).filter(([ds]) => ds <= today);
+  const timeOffDays = allPastDays.filter(([, d]) => d.timeOff === true).length;
+  const workedDays = allPastDays.filter(([, d]) => !d.timeOff && countDoneBlocks(d) > 0).length;
+  const totalTracked = allPastDays.length;
+  const timeOffPct = totalTracked > 0 ? Math.round(timeOffDays / totalTracked * 100) : 0;
+  const workPct = totalTracked > 0 ? Math.round(workedDays / totalTracked * 100) : 0;
+  document.getElementById('sc-days-worked').textContent = workedDays;
+  document.getElementById('sc-days-off').textContent = timeOffDays;
+  document.getElementById('sc-timeoff-pct').textContent = timeOffPct + '%';
+  document.getElementById('sc-work-pct').textContent = workPct + '%';
 
   // Charts — last 30 days
   const last30 = getLast30Days();
@@ -4025,45 +4140,116 @@ function renderStats() {
     };
   });
 
-  // Project distribution — all-time blocks per project (stacked bar)
+  // Project distribution — all-time blocks, grouped by parent → children
   const projDistEl = document.getElementById('proj-dist-section');
   if (projDistEl) {
     projDistEl.innerHTML = '';
-    const allProjs = [...state.projects, ARCHIVED_PROJ];
-    const projTotals = allProjs.map(p => {
-      let count = 0;
-      Object.values(state.days).forEach(d => {
-        Object.values(d.schedule || {}).forEach(pid => { if (pid === p.id) count++; });
+    // Count blocks per project id
+    const blocksByProjId = {};
+    [...state.projects, ARCHIVED_PROJ].forEach(p => { blocksByProjId[p.id] = 0; });
+    Object.values(state.days).forEach(d => {
+      Object.values(d.schedule || {}).forEach(pid => {
+        if (pid in blocksByProjId) blocksByProjId[pid]++;
       });
-      return { p, count };
-    }).filter(x => x.count > 0).sort((a, b) => b.count - a.count);
-    const totalBlocks = projTotals.reduce((s, x) => s + x.count, 0);
-    if (!projTotals.length) {
+    });
+    // Build top-level groups: each top-level project + its children
+    const allProjs = [...state.projects, ARCHIVED_PROJ];
+    const topLevel = allProjs.filter(p => !p.parentId);
+    const groups = topLevel.map(p => {
+      const children = state.projects.filter(sp => sp.parentId === p.id);
+      const childTotal = children.reduce((s, sp) => s + (blocksByProjId[sp.id] || 0), 0);
+      const ownCount = blocksByProjId[p.id] || 0;
+      return { p, ownCount, children, total: ownCount + childTotal };
+    }).filter(g => g.total > 0).sort((a, b) => b.total - a.total);
+    const grandTotal = groups.reduce((s, g) => s + g.total, 0);
+
+    if (!grandTotal) {
       projDistEl.innerHTML = '<div style="font-family:\'DM Mono\',monospace;font-size:10px;color:var(--faint)">No data yet.</div>';
     } else {
-      // Stacked bar
+      // Top-level stacked bar
       const bar = document.createElement('div');
       bar.className = 'stacked-bar';
-      projTotals.forEach(({ p, count }) => {
-        const pct = totalBlocks > 0 ? (count / totalBlocks * 100) : 0;
+      groups.forEach(({ p, total }) => {
+        const pct = grandTotal > 0 ? (total / grandTotal * 100) : 0;
         const seg = document.createElement('div');
         seg.className = 'stacked-bar-seg';
         seg.style.cssText = `width:${pct}%;background:${p.color}`;
-        seg.title = `${p.emoji} ${p.name}: ${Math.round(pct)}%`;
+        seg.title = `${p.emoji} ${p.name}: ${total} blocks (${Math.round(pct)}%)`;
         bar.appendChild(seg);
       });
       projDistEl.appendChild(bar);
-      // Legend
+      // Hierarchical legend
       const legend = document.createElement('div');
       legend.className = 'stacked-bar-legend';
-      projTotals.forEach(({ p, count }) => {
-        const pct = totalBlocks > 0 ? Math.round(count / totalBlocks * 100) : 0;
-        const item = document.createElement('div');
-        item.className = 'stacked-bar-legend-item';
-        item.innerHTML = `<span class="stacked-bar-legend-dot" style="background:${p.color}"></span><span style="color:${p.color}">${p.emoji} ${p.name}</span><span class="stacked-bar-legend-pct">${pct}%</span>`;
-        legend.appendChild(item);
+      groups.forEach(({ p, ownCount, children, total }) => {
+        const pct = grandTotal > 0 ? Math.round(total / grandTotal * 100) : 0;
+        const parentItem = document.createElement('div');
+        parentItem.className = 'stacked-bar-legend-item';
+        parentItem.innerHTML = `<span class="stacked-bar-legend-dot" style="background:${p.color}"></span><span style="color:${p.color}">${p.emoji} ${p.name}</span><span class="stacked-bar-legend-pct">${total} blocks · ${pct}%</span>`;
+        legend.appendChild(parentItem);
+        // Sub-project rows
+        children.filter(sp => (blocksByProjId[sp.id] || 0) > 0).forEach(sp => {
+          const spCount = blocksByProjId[sp.id] || 0;
+          const spPct = total > 0 ? Math.round(spCount / total * 100) : 0;
+          const childItem = document.createElement('div');
+          childItem.className = 'stacked-bar-legend-item stacked-bar-legend-child';
+          childItem.innerHTML = `<span style="color:var(--faint);margin-right:4px;font-size:9px">└</span><span class="stacked-bar-legend-dot" style="background:${sp.color}"></span><span style="color:${sp.color}">${sp.emoji} ${sp.name}</span><span class="stacked-bar-legend-pct">${spCount} · ${spPct}%</span>`;
+          legend.appendChild(childItem);
+        });
+        // Own blocks row if project has both own + children
+        if (children.length > 0 && ownCount > 0) {
+          const ownPct = total > 0 ? Math.round(ownCount / total * 100) : 0;
+          const ownItem = document.createElement('div');
+          ownItem.className = 'stacked-bar-legend-item stacked-bar-legend-child';
+          ownItem.innerHTML = `<span style="color:var(--faint);margin-right:4px;font-size:9px">└</span><span class="stacked-bar-legend-dot" style="background:${p.color};opacity:.4"></span><span style="color:var(--muted)">(direct)</span><span class="stacked-bar-legend-pct">${ownCount} · ${ownPct}%</span>`;
+          legend.appendChild(ownItem);
+        }
       });
       projDistEl.appendChild(legend);
+    }
+  }
+
+  // Meetings distribution — meeting blocks vs non-meeting blocks all time
+  const meetingsDistEl = document.getElementById('meetings-dist-section');
+  if (meetingsDistEl) {
+    meetingsDistEl.innerHTML = '';
+    let meetingCount = 0, nonMeetingCount = 0;
+    Object.entries(state.days).forEach(([ds, d]) => {
+      if (ds > today) return;
+      (d.completed || []).forEach(idx => {
+        if ((d.blockNotes || {})[idx]?.meeting) meetingCount++;
+        else nonMeetingCount++;
+      });
+    });
+    const totalMDist = meetingCount + nonMeetingCount;
+    if (totalMDist === 0) {
+      meetingsDistEl.innerHTML = '<div style="font-family:\'DM Mono\',monospace;font-size:10px;color:var(--faint)">No data yet.</div>';
+    } else {
+      const bar = document.createElement('div');
+      bar.className = 'stacked-bar';
+      const segments = [
+        { label: '📅 Meetings', count: meetingCount, color: 'var(--purple)' },
+        { label: '💼 Work', count: nonMeetingCount, color: 'var(--muted)' }
+      ];
+      segments.forEach(({ label, count, color }) => {
+        const pct = totalMDist > 0 ? (count / totalMDist * 100) : 0;
+        const seg = document.createElement('div');
+        seg.className = 'stacked-bar-seg';
+        seg.style.cssText = `width:${pct}%;background:${color}`;
+        seg.title = `${label}: ${count} blocks (${Math.round(pct)}%)`;
+        bar.appendChild(seg);
+      });
+      meetingsDistEl.appendChild(bar);
+      const legend = document.createElement('div');
+      legend.className = 'stacked-bar-legend';
+      segments.forEach(({ label, count, color }) => {
+        const pct = totalMDist > 0 ? Math.round(count / totalMDist * 100) : 0;
+        const item = document.createElement('div');
+        item.className = 'stacked-bar-legend-item';
+        item.innerHTML = `<span class="stacked-bar-legend-dot" style="background:${color}"></span><span style="color:${color}">${label}</span><span class="stacked-bar-legend-pct">${count} blocks · ${pct}%</span>`;
+        legend.appendChild(item);
+      });
+      meetingsDistEl.appendChild(legend);
     }
   }
 
@@ -4092,7 +4278,8 @@ function renderNotesTab() {
       const idx = +idxStr;
       const note = (bn.note || '').trim();
       const todos = (bn.todos || []);
-      if (!note) return;
+      const meeting = bn.meeting === true;
+      if (!note && !meeting) return;
       const projId = sched[idx];
       if (!projId) return;
       if (!projEntries[projId]) projEntries[projId] = [];
@@ -4104,7 +4291,8 @@ function renderNotesTab() {
         note,
         todos,
         importance: bn.importance || null,
-        tags: bn.tags || []
+        tags: bn.tags || [],
+        meeting
       });
     });
   });
@@ -4183,6 +4371,20 @@ function renderNotesTab() {
       tagsRow.appendChild(btn);
     });
     filterBar.appendChild(tagsRow);
+    // Meeting row
+    const meetingRow = document.createElement('div');
+    meetingRow.className = 'notes-filter-row';
+    const allTypeBtn = document.createElement('button');
+    allTypeBtn.className = 'imp-filter-btn' + (!ui.notesTabMeetingFilter ? ' active' : '');
+    allTypeBtn.textContent = 'All types';
+    allTypeBtn.onclick = () => { ui.notesTabMeetingFilter = false; renderNotesTab(); };
+    meetingRow.appendChild(allTypeBtn);
+    const meetingOnlyBtn = document.createElement('button');
+    meetingOnlyBtn.className = 'meeting-toggle-btn' + (ui.notesTabMeetingFilter ? ' active' : '');
+    meetingOnlyBtn.innerHTML = '📅 Meetings only';
+    meetingOnlyBtn.onclick = () => { ui.notesTabMeetingFilter = !ui.notesTabMeetingFilter; renderNotesTab(); };
+    meetingRow.appendChild(meetingOnlyBtn);
+    filterBar.appendChild(meetingRow);
   }
 
   // Render log for selected project
@@ -4199,10 +4401,11 @@ function renderNotesTab() {
   const allEntries = rawEntries.slice().sort((a, b) => b.date.localeCompare(a.date) || b.blockIdx - a.blockIdx);
   const entries = allEntries
     .filter(e => ui.notesTabImportanceFilter === 0 || (e.importance || 0) === ui.notesTabImportanceFilter)
-    .filter(e => !ui.notesTabTagFilter.length || ui.notesTabTagFilter.some(tid => (e.tags || []).includes(tid)));
+    .filter(e => !ui.notesTabTagFilter.length || ui.notesTabTagFilter.some(tid => (e.tags || []).includes(tid)))
+    .filter(e => !ui.notesTabMeetingFilter || e.meeting === true);
 
   if (!entries.length) {
-    const hasFilter = ui.notesTabImportanceFilter > 0 || ui.notesTabTagFilter.length > 0;
+    const hasFilter = ui.notesTabImportanceFilter > 0 || ui.notesTabTagFilter.length > 0 || ui.notesTabMeetingFilter;
     logEl.innerHTML = `<div class="notes-log-empty">${hasFilter ? 'No notes match the current filters.' : 'No notes for this project yet.'}</div>`;
     return;
   }
@@ -4230,6 +4433,7 @@ function renderNotesTab() {
           <div class="notes-log-entry-proj-dot" style="background:${entryProj.color}"></div>
           <span style="color:${entryProj.color}">${entryProj.emoji} ${entryProj.name}</span>
         </div>
+        ${e.meeting?`<span class="badge-meeting" style="margin-left:2px">📅 meeting</span>`:''}
         ${e.importance?`<div class="notes-log-imp-stars" title="Importance: ${e.importance}/5">${'★'.repeat(e.importance)}${'☆'.repeat(5-e.importance)}</div>`:''}
         ${(e.tags||[]).length ? `<div class="notes-log-tags">${(e.tags).map(tid=>{const t=(state.settings.tags||[]).find(x=>x.id===tid);return t?`<span class="notes-log-tag-dot" title="${t.name||tid}" style="background:${t.color}"></span>`:''}).join('')}</div>` : ''}
       </div>`;
@@ -4376,6 +4580,7 @@ function switchTab(tab) {
   if (tab === 'today') {
     ui.currentDate = todayStr();
     renderTodayTab();
+    if (ui.focusBlock !== null) renderBlockFocus();
   }
   if (tab === 'todos') {
     // Reset open state to default each time the tab is visited
