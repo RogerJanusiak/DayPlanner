@@ -17,3 +17,6 @@ nohup.out
 ._.claude
 ._day-planner.css
 ._day-planner.js
+._images
+images/
+._.gitignore

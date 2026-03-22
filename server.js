@@ -15,6 +15,12 @@ const MIME = {
   '.js':   'text/javascript',
   '.css':  'text/css',
   '.ico':  'image/x-icon',
+  '.png':  'image/png',
+  '.jpg':  'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif':  'image/gif',
+  '.webp': 'image/webp',
+  '.svg':  'image/svg+xml',
 };
 
 // ── Server ────────────────────────────────────────────────────
@@ -42,6 +48,51 @@ const server = http.createServer((req, res) => {
       } catch (err) {
         res.writeHead(500);
         res.end(JSON.stringify({ ok: false }));
+      }
+    });
+    return;
+  }
+
+  // ── POST /save-image  — save pasted image to disk ────────
+  if (req.method === 'POST' && req.url === '/save-image') {
+    const chunks = [];
+    req.on('data', chunk => { chunks.push(chunk); });
+    req.on('end', () => {
+      try {
+        const { data, filename, project, yearMonth } = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        const matches = data.match(/^data:image\/(\w+);base64,(.+)$/s);
+        if (!matches) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: 'Invalid image data' }));
+          return;
+        }
+        const rawExt  = matches[1] === 'jpeg' ? 'jpg' : matches[1];
+        const imgData = Buffer.from(matches[2], 'base64');
+
+        // Sanitise each path component to prevent traversal; replace spaces with hyphens
+        const safeProject  = (project  || 'misc').replace(/[^\w\s\-]/g, '').trim().replace(/\s+/g, '-') || 'misc';
+        const safeMonth    = (yearMonth|| '').replace(/[^0-9\-]/g, '');
+        const safeFilename = (filename || 'image').replace(/[^\w\-]/g, '') || 'image';
+
+        const dir      = path.join(__dirname, 'images', safeProject, safeMonth);
+        fs.mkdirSync(dir, { recursive: true });
+
+        // Avoid overwriting: append a counter if the file already exists
+        let fname = `${safeFilename}.${rawExt}`;
+        let counter = 1;
+        while (fs.existsSync(path.join(dir, fname))) {
+          fname = `${safeFilename}-${counter++}.${rawExt}`;
+        }
+        fs.writeFileSync(path.join(dir, fname), imgData);
+
+        const urlPath = `images/${safeProject}/${safeMonth}/${fname}`;
+        console.log(`\n[image] Saved ${urlPath}`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, path: urlPath }));
+      } catch (err) {
+        console.error('\nImage save error:', err.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: err.message }));
       }
     });
     return;
@@ -81,11 +132,18 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ── GET static files (html, css, js) ─────────────────────
+  // ── GET static files (html, css, js, images/…) ───────────
   if (req.method === 'GET') {
-    const urlPath = req.url === '/' ? '/day-planner.html' : req.url;
-    const filePath = path.join(__dirname, path.basename(urlPath));
-    const ext = path.extname(filePath);
+    let rawUrl = req.url === '/' ? '/day-planner.html' : req.url.split('?')[0];
+    try { rawUrl = decodeURIComponent(rawUrl); } catch (_) {}
+    // For root-level assets keep the basename-only behaviour; for images/ allow the subpath
+    const urlPath  = rawUrl.startsWith('/images/') ? rawUrl : `/${path.basename(rawUrl)}`;
+    const filePath = path.resolve(path.join(__dirname, urlPath));
+    // Path-traversal guard
+    if (!filePath.startsWith(path.resolve(__dirname))) {
+      res.writeHead(403); res.end('Forbidden'); return;
+    }
+    const ext  = path.extname(filePath);
     const mime = MIME[ext] || 'application/octet-stream';
     try {
       const data = fs.readFileSync(filePath);
@@ -93,7 +151,7 @@ const server = http.createServer((req, res) => {
       res.end(data);
     } catch (err) {
       res.writeHead(404);
-      res.end(`Not found: ${urlPath}`);
+      res.end(`Not found: ${rawUrl}`);
     }
     return;
   }

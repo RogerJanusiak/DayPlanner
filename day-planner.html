@@ -20,7 +20,7 @@
       <button class="tab-btn" data-tab="today">Today</button>
       <button class="tab-btn" data-tab="todos">Todos</button>
       <button class="tab-btn" data-tab="notes">Notes</button>
-      <button class="tab-btn" data-tab="stats">Stats</button>
+      <button class="tab-btn" data-tab="review">Review</button>
     </div>
     <div id="save-status"></div>
     <button id="settings-btn" title="Settings" onclick="openSettings()">⚙</button>
@@ -37,6 +37,7 @@
     <div id="proj-list"></div>
   </div>
   <div id="sidebar-bottom">
+    <div id="sidebar-due-todos" style="margin-bottom:12px"></div>
     <div id="proj-stat-list" style="margin-bottom:10px"></div>
     <!-- default-block and timeoff moved to settings / nav-row -->
   </div>
@@ -53,7 +54,7 @@
       <button class="nav-arr" id="nav-next">&#8594;</button>
       <button id="nav-today-btn">Today</button>
       <div id="readonly-badge">PAST — READ ONLY</div>
-      <button class="toggle-btn" id="timeoff-btn" title="Mark as time off (no penalty)">Time Off</button>
+<button class="toggle-btn" id="timeoff-btn" title="Mark as time off (no penalty)">Time Off</button>
     </div>
     <div id="plan-active-banner" style="display:none;position:sticky;top:0;z-index:100;padding:8px 18px 0;background:var(--bg);border-bottom:1px solid var(--border)">
       <div id="plan-active-banner-inner" style="background:rgba(232,201,122,.1);border:1px solid rgba(232,201,122,.4);border-radius:8px;padding:8px 14px;display:flex;align-items:center;gap:10px;margin-bottom:8px">
@@ -179,10 +180,17 @@
         <div id="block-focus-title">Block</div>
         <div id="block-focus-time"></div>
         <div id="block-focus-meeting-badge" style="display:none">📅 MEETING</div>
+        <button id="focus-pivot-btn" style="display:none" title="Pivot between two blocks">⇄ Pivot</button>
+        <button id="focus-debug-5s-btn" style="display:none" title="Skip to 5 seconds remaining">⚡ 5s</button>
       </div>
-      <!-- Importance + Tags side by side -->
+      <div id="pivot-status-section" style="display:none;flex-shrink:0;margin-bottom:16px"></div>
+      <!-- Meeting + Importance + Tags side by side -->
       <div class="block-focus-section" style="padding:14px 20px">
         <div style="display:flex;gap:20px;align-items:flex-start">
+          <div style="flex-shrink:0">
+            <div class="block-focus-section-label" style="margin-bottom:8px">Type</div>
+            <button class="meeting-toggle-btn" id="focus-meeting-btn">📅 Meeting</button>
+          </div>
           <div style="flex-shrink:0">
             <div class="block-focus-section-label" style="margin-bottom:8px">Importance</div>
             <div class="star-picker" id="focus-star-picker">
@@ -193,14 +201,19 @@
               <button class="star-btn" data-val="5">★</button>
             </div>
             <button class="clear-imp-btn" id="focus-clear-imp-btn" style="margin-top:6px">clear</button>
-            <div class="block-focus-section-label" style="margin-bottom:6px;margin-top:14px">Type</div>
-            <button class="meeting-toggle-btn" id="focus-meeting-btn">📅 Meeting</button>
           </div>
           <div style="flex:1;min-width:0">
             <div class="block-focus-section-label" style="margin-bottom:8px">Tags</div>
             <div id="focus-tag-picker" style="display:flex;gap:5px;flex-wrap:wrap"></div>
           </div>
         </div>
+      </div>
+      <div class="block-focus-section" id="block-focus-leftoff-section" style="display:none">
+        <div class="block-focus-section-label" style="display:flex;align-items:center;justify-content:space-between">
+          <span>📌 Left Off</span>
+          <span id="block-focus-leftoff-date" style="color:var(--faint);font-size:9px"></span>
+        </div>
+        <div id="block-focus-leftoff-text"></div>
       </div>
       <!-- Notes with markdown -->
       <div class="block-focus-section">
@@ -218,6 +231,10 @@
           <span id="focus-save-status" style="font-family:'DM Mono',monospace;font-size:10px;color:var(--green);opacity:0;transition:opacity .3s"></span>
         </div>
       </div>
+      <div class="block-focus-section" id="block-focus-recent-notes-section" style="display:none">
+        <div class="block-focus-section-label">Recent Notes</div>
+        <div id="block-focus-recent-notes-list"></div>
+      </div>
       <div class="block-focus-section" id="block-focus-proj-todos-section" style="display:none">
         <div class="block-focus-section-label" style="display:flex;align-items:center;justify-content:space-between">
           <span>Project Todos</span>
@@ -226,12 +243,9 @@
         <div id="block-focus-proj-todos-list"></div>
         <div id="block-focus-add-proj-todo-row">
           <input id="block-focus-new-proj-todo" type="text" placeholder="Add a project todo…">
+          <input id="block-focus-new-proj-todo-due" type="date" title="Due date (optional)">
           <button id="block-focus-add-proj-todo-btn">+ Add</button>
         </div>
-      </div>
-      <div class="block-focus-section" id="block-focus-recent-notes-section" style="display:none">
-        <div class="block-focus-section-label">Recent Notes</div>
-        <div id="block-focus-recent-notes-list"></div>
       </div>
     </div>
     <!-- Timeline -->
@@ -270,58 +284,68 @@
     </div>
   </div>
 
-  <!-- STATS TAB -->
-  <div class="tab-panel" id="stats-panel">
-    <div class="stats-grid">
-      <div class="stat-card"><div class="stat-card-val" id="sc-total-blocks" style="color:var(--gold)">0</div><div class="stat-card-label">TOTAL BLOCKS DONE</div></div>
-      <div class="stat-card"><div class="stat-card-val" id="sc-total-hours" style="color:var(--green)">0.0</div><div class="stat-card-label">TOTAL HOURS TRACKED</div></div>
-      <div class="stat-card"><div class="stat-card-val" id="sc-avg" style="color:var(--purple)">0.0</div><div class="stat-card-label">AVG BLOCKS / DAY</div></div>
-      <div class="stat-card"><div class="stat-card-val" id="sc-streak" style="color:var(--orange)">0</div><div class="stat-card-label">STREAK (WEEKDAYS)</div></div>
-      <div class="stat-card"><div class="stat-card-val" id="sc-best" style="color:var(--pink)">0</div><div class="stat-card-label">BEST DAY</div></div>
-      <div class="stat-card"><div class="stat-card-val" id="sc-days" style="color:var(--text)">0</div><div class="stat-card-label">DAYS TRACKED</div></div>
-    </div>
-    <!-- Todo stats row -->
-    <div class="stats-grid" style="margin-bottom:14px">
-      <div class="stat-card"><div class="stat-card-val" id="sc-todos-total" style="color:var(--green)">0</div><div class="stat-card-label">TODOS COMPLETED</div></div>
-      <div class="stat-card"><div class="stat-card-val" id="sc-todos-active" style="color:var(--teal)">0</div><div class="stat-card-label">TODOS ACTIVE</div></div>
-      <div class="stat-card"><div class="stat-card-val" id="sc-todos-progress" style="color:var(--gold)">0</div><div class="stat-card-label">PROGRESS LOGS</div></div>
-      <div class="stat-card"><div class="stat-card-val" id="sc-meetings" style="color:var(--purple)">0</div><div class="stat-card-label">MEETINGS LOGGED</div></div>
-    </div>
-    <!-- Time off stats row -->
-    <div class="stats-grid" style="margin-bottom:14px">
-      <div class="stat-card"><div class="stat-card-val" id="sc-days-worked" style="color:var(--green)">0</div><div class="stat-card-label">DAYS WORKED</div></div>
-      <div class="stat-card"><div class="stat-card-val" id="sc-days-off" style="color:var(--teal)">0</div><div class="stat-card-label">DAYS OFF</div></div>
-      <div class="stat-card"><div class="stat-card-val" id="sc-timeoff-pct" style="color:var(--orange)">0%</div><div class="stat-card-label">% TIME OFF</div></div>
-      <div class="stat-card"><div class="stat-card-val" id="sc-work-pct" style="color:var(--gold)">0%</div><div class="stat-card-label">% DAYS WORKED</div></div>
-    </div>
-    <!-- Charts -->
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
-      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:11px;padding:14px">
-        <div style="font-family:'DM Mono',monospace;font-size:9px;color:var(--muted);letter-spacing:.1em;margin-bottom:10px">BLOCKS DONE — LAST 30 DAYS</div>
-        <canvas id="chart-blocks" height="90"></canvas>
+  <!-- REVIEW TAB -->
+  <div class="tab-panel" id="review-panel">
+    <!-- Dynamic section: nav row + week/month content (rebuilt on each render) -->
+    <div id="review-dynamic"></div>
+    <!-- All-time section: persistent in DOM so canvas IDs remain valid -->
+    <div id="review-alltime" style="display:none">
+      <div class="stats-grid">
+        <div class="stat-card"><div class="stat-card-val" id="sc-total-blocks" style="color:var(--gold)">0</div><div class="stat-card-label">TOTAL BLOCKS DONE</div></div>
+        <div class="stat-card"><div class="stat-card-val" id="sc-total-hours" style="color:var(--green)">0.0</div><div class="stat-card-label">TOTAL HOURS TRACKED</div></div>
+        <div class="stat-card"><div class="stat-card-val" id="sc-avg" style="color:var(--purple)">0.0</div><div class="stat-card-label">AVG BLOCKS / DAY</div></div>
+        <div class="stat-card"><div class="stat-card-val" id="sc-streak" style="color:var(--orange)">0</div><div class="stat-card-label">STREAK (WEEKDAYS)</div></div>
+        <div class="stat-card"><div class="stat-card-val" id="sc-best" style="color:var(--pink)">0</div><div class="stat-card-label">BEST DAY</div></div>
+        <div class="stat-card"><div class="stat-card-val" id="sc-days" style="color:var(--text)">0</div><div class="stat-card-label">DAYS TRACKED</div></div>
+        <div class="stat-card"><div class="stat-card-val" id="sc-days-off-worked-main" style="color:var(--gold)">0</div><div class="stat-card-label">DAYS OFF WORKED</div></div>
       </div>
-      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:11px;padding:14px">
-        <div style="font-family:'DM Mono',monospace;font-size:9px;color:var(--muted);letter-spacing:.1em;margin-bottom:10px">TODOS COMPLETED — LAST 30 DAYS</div>
-        <canvas id="chart-todos" height="90"></canvas>
+      <div class="stats-grid" style="margin-bottom:14px">
+        <div class="stat-card"><div class="stat-card-val" id="sc-todos-total" style="color:var(--green)">0</div><div class="stat-card-label">TODOS COMPLETED</div></div>
+        <div class="stat-card"><div class="stat-card-val" id="sc-todos-active" style="color:var(--teal)">0</div><div class="stat-card-label">TODOS ACTIVE</div></div>
+        <div class="stat-card"><div class="stat-card-val" id="sc-todos-progress" style="color:var(--gold)">0</div><div class="stat-card-label">PROGRESS LOGS</div></div>
+        <div class="stat-card"><div class="stat-card-val" id="sc-meetings" style="color:var(--purple)">0</div><div class="stat-card-label">MEETINGS LOGGED</div></div>
       </div>
-    </div>
-    <div style="display:grid;grid-template-columns:1fr 1.6fr;gap:12px;margin-bottom:12px">
-      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:11px;padding:14px;display:flex;flex-direction:column">
-        <div style="font-family:'DM Mono',monospace;font-size:9px;color:var(--muted);letter-spacing:.1em;margin-bottom:10px;flex-shrink:0">MOMENTUM — LAST 30 DAYS</div>
-        <div style="flex:1;min-height:100px" id="chart-momentum-wrap">
-          <canvas id="chart-momentum"></canvas>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
+        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:11px;padding:14px">
+          <div style="font-family:'DM Mono',monospace;font-size:9px;color:var(--muted);letter-spacing:.1em;margin-bottom:10px">BLOCKS DONE — LAST 30 DAYS</div>
+          <canvas id="chart-blocks" height="90"></canvas>
+        </div>
+        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:11px;padding:14px">
+          <div style="font-family:'DM Mono',monospace;font-size:9px;color:var(--muted);letter-spacing:.1em;margin-bottom:10px">TODOS COMPLETED — LAST 30 DAYS</div>
+          <canvas id="chart-todos" height="90"></canvas>
         </div>
       </div>
-      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:11px;padding:14px">
-        <div style="font-family:'DM Mono',monospace;font-size:9px;color:var(--muted);letter-spacing:.1em;margin-bottom:10px">TIME BY PROJECT — ALL TIME</div>
-        <div id="proj-dist-section"></div>
+      <div style="display:grid;grid-template-columns:1fr 1.6fr;gap:12px;margin-bottom:12px">
+        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:11px;padding:14px;display:flex;flex-direction:column">
+          <div style="font-family:'DM Mono',monospace;font-size:9px;color:var(--muted);letter-spacing:.1em;margin-bottom:10px;flex-shrink:0">MOMENTUM — LAST 30 DAYS</div>
+          <div style="flex:1;min-height:100px" id="chart-momentum-wrap">
+            <canvas id="chart-momentum"></canvas>
+          </div>
+        </div>
+        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:11px;padding:14px">
+          <div style="font-family:'DM Mono',monospace;font-size:9px;color:var(--muted);letter-spacing:.1em;margin-bottom:10px">TIME BY PROJECT — ALL TIME</div>
+          <div id="proj-dist-section"></div>
+        </div>
       </div>
-    </div>
-    <div style="display:grid;grid-template-columns:1fr 1.6fr;gap:12px;margin-bottom:16px">
-      <div></div>
-      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:11px;padding:14px">
-        <div style="font-family:'DM Mono',monospace;font-size:9px;color:var(--muted);letter-spacing:.1em;margin-bottom:10px">MEETINGS VS WORK — ALL TIME</div>
-        <div id="meetings-dist-section"></div>
+      <div style="display:grid;grid-template-columns:1fr 1.6fr;gap:12px;margin-bottom:16px">
+        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:11px;padding:14px">
+          <div style="font-family:'DM Mono',monospace;font-size:9px;color:var(--muted);letter-spacing:.1em;margin-bottom:12px">WORK BREAKDOWN</div>
+          <div style="display:flex;gap:20px;margin-bottom:14px;flex-wrap:wrap">
+            <div><div class="stat-card-val" style="color:var(--green)" id="sc-days-worked">0</div><div class="stat-card-label">DAYS WORKED</div></div>
+            <div><div class="stat-card-val" style="color:var(--gold)" id="sc-days-off-worked">0</div><div class="stat-card-label">DAYS OFF WORKED</div></div>
+            <div><div class="stat-card-val" style="color:var(--teal)" id="sc-days-off">0</div><div class="stat-card-label">DAYS OFF RESTED</div></div>
+          </div>
+          <div id="sc-work-breakdown-bar" style="height:18px;border-radius:6px;overflow:hidden;display:flex;background:var(--bg1)"></div>
+          <div style="display:flex;gap:14px;margin-top:8px;flex-wrap:wrap">
+            <div style="display:flex;align-items:center;gap:5px"><span style="width:9px;height:9px;border-radius:2px;background:var(--green);display:inline-block;flex-shrink:0"></span><span style="font-family:'DM Mono',monospace;font-size:9px;color:var(--muted)" id="sc-work-pct-label">0%</span></div>
+            <div style="display:flex;align-items:center;gap:5px"><span style="width:9px;height:9px;border-radius:2px;background:var(--gold);display:inline-block;flex-shrink:0"></span><span style="font-family:'DM Mono',monospace;font-size:9px;color:var(--muted)" id="sc-off-worked-pct-label">0%</span></div>
+            <div style="display:flex;align-items:center;gap:5px"><span style="width:9px;height:9px;border-radius:2px;background:var(--teal);display:inline-block;flex-shrink:0"></span><span style="font-family:'DM Mono',monospace;font-size:9px;color:var(--muted)" id="sc-off-rest-pct-label">0%</span></div>
+          </div>
+        </div>
+        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:11px;padding:14px">
+          <div style="font-family:'DM Mono',monospace;font-size:9px;color:var(--muted);letter-spacing:.1em;margin-bottom:10px">MEETINGS VS WORK — ALL TIME</div>
+          <div id="meetings-dist-section"></div>
+        </div>
       </div>
     </div>
   </div>
@@ -372,14 +396,18 @@
       <div class="importance-row" id="notes-tag-row">
         <span class="importance-label">TAGS</span>
         <div id="notes-tag-picker"></div>
-        <button class="clear-imp-btn" id="notes-tag-edit-btn">rename</button>
       </div>
-      <div id="notes-tag-rename-row" style="display:none"></div>
       <div class="importance-row" id="notes-meeting-row">
         <span class="importance-label">TYPE</span>
         <button class="meeting-toggle-btn" id="notes-meeting-btn">📅 Meeting</button>
       </div>
-      <div class="notes-section-label" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+      <div id="notes-leftoff-wrapper">
+        <div class="notes-section-label" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+          <span>📌 Left Off</span>
+        </div>
+        <textarea id="notes-resume-textarea" placeholder="Where did you leave off? (shown next time you open this project)"></textarea>
+      </div>
+      <div class="notes-section-label" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;margin-top:14px">
         <span>Notes</span>
         <div style="display:flex;gap:4px">
           <button id="notes-live-btn" class="tab-btn" style="padding:3px 8px;font-size:9px;border-bottom-width:1px;display:none">LIVE</button>
@@ -397,6 +425,11 @@
           <span id="block-proj-todos-proj-name" style="color:var(--faint);font-size:9px"></span>
         </div>
         <div id="block-proj-todos-list"></div>
+        <div id="block-proj-todos-add-row" class="add-proj-todo-row" style="margin-top:8px">
+          <input id="block-proj-todos-new-input" class="add-proj-todo-input" type="text" placeholder="Add a new todo…">
+          <input id="block-proj-todos-new-due" class="add-proj-todo-due" type="date" title="Due date (optional)">
+          <button id="block-proj-todos-add-btn" class="add-proj-todo-btn">+ Add</button>
+        </div>
       </div>
     </div>
     <div id="notes-modal-footer">
@@ -408,16 +441,40 @@
 
 <!-- Block Complete Popup -->
 <div id="block-complete-popup">
-  <div id="bcp-header">
-    <div id="bcp-proj-name"></div>
-    <div id="bcp-label">block complete</div>
+  <div id="bcp-inner">
+    <div id="bcp-header">
+      <div id="bcp-proj-name"></div>
+      <div id="bcp-label">block complete</div>
+    </div>
+    <div id="bcp-resume-section">
+      <div id="bcp-resume-label">where did you leave off?</div>
+      <textarea id="bcp-resume-input" placeholder="What to pick up next time…"></textarea>
+    </div>
+    <div id="bcp-actions">
+      <button id="bcp-extend-btn" style="display:none">+30m Extend</button>
+      <button id="bcp-next-btn">▶ Start Next</button>
+      <button id="bcp-add-block-btn" style="display:none">+ Add Block</button>
+      <button id="bcp-dismiss-btn">✕ Dismiss</button>
+    </div>
+    <div id="bcp-proj-picker" style="display:none"></div>
+    <button id="bcp-sound-btn">🔇 Stop Sound</button>
   </div>
-  <div id="bcp-actions">
-    <button id="bcp-extend-btn" style="display:none">+30m Extend</button>
-    <button id="bcp-next-btn">▶ Start Next</button>
-    <button id="bcp-dismiss-btn">✕ Dismiss</button>
+</div>
+
+
+<!-- PIVOT PICKER OVERLAY -->
+<div id="pivot-picker-overlay">
+  <div id="pivot-picker-modal">
+    <div id="pivot-picker-header">
+      <span>⇄ Choose Pivot Block</span>
+      <button id="pivot-picker-close">✕</button>
+    </div>
+    <div id="pivot-picker-body">
+      <div class="pivot-section-lbl">FROM TODAY'S PLAN</div>
+      <div id="pivot-picker-list"></div>
+      <div id="pivot-picker-new-section"></div>
+    </div>
   </div>
-  <button id="bcp-sound-btn">🔇 Stop Sound</button>
 </div>
 
 <!-- Hidden elements for legacy JS references -->
