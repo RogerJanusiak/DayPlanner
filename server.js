@@ -3,9 +3,41 @@ const fs   = require('fs');
 const path = require('path');
 const { exec } = require('child_process');
 
-const PORT      = 3000;
-const HTML_FILE = path.join(__dirname, 'day-planner.html');
-const SAVE_FILE = path.join(__dirname, 'day-planner-backup.yaml');
+const PORT       = 3000;
+const HTML_FILE  = path.join(__dirname, 'day-planner.html');
+const SAVE_FILE  = path.join(__dirname, 'day-planner-backup.yaml');
+const BACKUP_DIR = path.join(__dirname, 'backups');
+
+// ── Backup helpers ─────────────────────────────────────────
+function todayBackupPath() {
+  const now = new Date();
+  const yyyy = now.getFullYear();
+  const mm   = String(now.getMonth() + 1).padStart(2, '0');
+  const dd   = String(now.getDate()).padStart(2, '0');
+  const dir  = path.join(BACKUP_DIR, String(yyyy), mm);
+  const file = path.join(dir, `day-planner-${yyyy}-${mm}-${dd}.yaml`);
+  return { dir, file };
+}
+
+function performBackup() {
+  if (!fs.existsSync(SAVE_FILE)) return { ok: false, error: 'No backup file to copy' };
+  try {
+    const { dir, file } = todayBackupPath();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.copyFileSync(SAVE_FILE, file);
+    const t = new Date().toLocaleTimeString();
+    console.log(`\n[${t}] Backup saved to ${path.relative(__dirname, file)}`);
+    return { ok: true, path: path.relative(__dirname, file) };
+  } catch (err) {
+    console.error('\nBackup error:', err.message);
+    return { ok: false, error: err.message };
+  }
+}
+
+function shouldBackupToday() {
+  const { file } = todayBackupPath();
+  return !fs.existsSync(file);
+}
 
 // ── MIME types ────────────────────────────────────────────────
 const MIME = {
@@ -123,12 +155,22 @@ const server = http.createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/load') {
     if (fs.existsSync(SAVE_FILE)) {
       const data = fs.readFileSync(SAVE_FILE, 'utf8');
+      // Auto-backup once per day on first load
+      if (shouldBackupToday()) performBackup();
       res.writeHead(200, { 'Content-Type': 'text/yaml; charset=utf-8' });
       res.end(data);
     } else {
       res.writeHead(204); // no content — first run, no file yet
       res.end();
     }
+    return;
+  }
+
+  // ── POST /backup  — manual backup ─────────────────────────
+  if (req.method === 'POST' && req.url === '/backup') {
+    const result = performBackup();
+    res.writeHead(result.ok ? 200 : 500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(result));
     return;
   }
 

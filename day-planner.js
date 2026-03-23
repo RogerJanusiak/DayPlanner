@@ -1038,6 +1038,29 @@ function exportYaml() {
   a.click();
 }
 
+async function manualBackup() {
+  const btn = document.getElementById('sp-manual-backup-btn');
+  if (btn) { btn.textContent = '⏳ Backing up…'; btn.disabled = true; }
+  try {
+    const r = await fetch('/backup', { method: 'POST' });
+    const j = await r.json();
+    if (btn) {
+      if (j.ok) {
+        btn.textContent = '✓ Backup saved';
+        setTimeout(() => { btn.textContent = '☁ Manual Backup'; btn.disabled = false; }, 2000);
+      } else {
+        btn.textContent = '✗ Backup failed';
+        setTimeout(() => { btn.textContent = '☁ Manual Backup'; btn.disabled = false; }, 2000);
+      }
+    }
+  } catch (e) {
+    if (btn) {
+      btn.textContent = '✗ Backup failed';
+      setTimeout(() => { btn.textContent = '☁ Manual Backup'; btn.disabled = false; }, 2000);
+    }
+  }
+}
+
 function importYaml(text) {
   try {
     const p = parseYaml(text);
@@ -3192,6 +3215,14 @@ function renderSettingsPanel() {
   exportNotesBtn.textContent = '⬇ Export Notes (.md)';
   exportNotesBtn.onclick = () => { if (ui.notesTabProjId) exportNotesMarkdown(ui.notesTabProjId); else alert('Select a project in the Notes tab first.'); };
   dataButtons.appendChild(exportNotesBtn);
+
+  const manualBackupBtn = document.createElement('button');
+  manualBackupBtn.className = 'settings-data-btn';
+  manualBackupBtn.id = 'sp-manual-backup-btn';
+  manualBackupBtn.style.cssText += ';border-color:var(--gold);color:var(--gold)';
+  manualBackupBtn.textContent = '☁ Manual Backup';
+  manualBackupBtn.onclick = manualBackup;
+  dataButtons.appendChild(manualBackupBtn);
 
   dataSection.appendChild(dataButtons);
   body.appendChild(dataSection);
