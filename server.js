@@ -9,35 +9,51 @@ const SAVE_FILE  = path.join(__dirname, 'day-planner-backup.yaml');
 const BACKUP_DIR = path.join(__dirname, 'backups');
 
 // ── Backup helpers ─────────────────────────────────────────
-function todayBackupPath() {
-  const now = new Date();
+function buildBackupPath() {
+  const now  = new Date();
   const yyyy = now.getFullYear();
   const mm   = String(now.getMonth() + 1).padStart(2, '0');
   const dd   = String(now.getDate()).padStart(2, '0');
+  const hh   = String(now.getHours()).padStart(2, '0');
+  const min  = String(now.getMinutes()).padStart(2, '0');
   const dir  = path.join(BACKUP_DIR, String(yyyy), mm);
-  const file = path.join(dir, `day-planner-${yyyy}-${mm}-${dd}.yaml`);
-  return { dir, file };
+  const file = path.join(dir, `day-planner-${yyyy}-${mm}-${dd}_${hh}-${min}.yaml`);
+  return { dir, file, yyyy, mm, dd };
 }
 
 function performBackup() {
   if (!fs.existsSync(SAVE_FILE)) return { ok: false, error: 'No backup file to copy' };
   try {
-    const { dir, file } = todayBackupPath();
+    const { dir, file } = buildBackupPath();
     fs.mkdirSync(dir, { recursive: true });
     fs.copyFileSync(SAVE_FILE, file);
-    const t = new Date().toLocaleTimeString();
-    console.log(`\n[${t}] Backup saved to ${path.relative(__dirname, file)}`);
-    return { ok: true, path: path.relative(__dirname, file) };
+    const rel = path.relative(__dirname, file);
+    const t   = new Date().toLocaleTimeString();
+    console.log(`\n[${t}] Backup saved to ${rel}`);
+    return { ok: true, path: rel };
   } catch (err) {
     console.error('\nBackup error:', err.message);
     return { ok: false, error: err.message };
   }
 }
 
-function shouldBackupToday() {
-  const { file } = todayBackupPath();
-  return !fs.existsSync(file);
+function hasBackupToday() {
+  const { dir, yyyy, mm, dd } = buildBackupPath();
+  if (!fs.existsSync(dir)) return false;
+  return fs.readdirSync(dir).some(f => f.startsWith(`day-planner-${yyyy}-${mm}-${dd}`));
 }
+
+// ── Midnight backup scheduler ──────────────────────────────
+function scheduleMidnightBackup() {
+  const now         = new Date();
+  const midnight    = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0);
+  const msUntil     = midnight - now;
+  setTimeout(() => {
+    performBackup();
+    scheduleMidnightBackup(); // reschedule for next midnight
+  }, msUntil);
+}
+scheduleMidnightBackup();
 
 // ── MIME types ────────────────────────────────────────────────
 const MIME = {
@@ -156,7 +172,7 @@ const server = http.createServer((req, res) => {
     if (fs.existsSync(SAVE_FILE)) {
       const data = fs.readFileSync(SAVE_FILE, 'utf8');
       // Auto-backup once per day on first load
-      if (shouldBackupToday()) performBackup();
+      if (!hasBackupToday()) performBackup();
       res.writeHead(200, { 'Content-Type': 'text/yaml; charset=utf-8' });
       res.end(data);
     } else {

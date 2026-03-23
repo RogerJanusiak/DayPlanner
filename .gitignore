@@ -20,3 +20,5 @@ nohup.out
 ._images
 images/
 ._.gitignore
+backups/
+._backups
