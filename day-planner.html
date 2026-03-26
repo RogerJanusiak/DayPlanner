@@ -55,6 +55,10 @@
       <button id="nav-today-btn">Today</button>
       <div id="readonly-badge">PAST — READ ONLY</div>
 <button class="toggle-btn" id="timeoff-btn" title="Mark as time off (no penalty)">Time Off</button>
+      <div id="day-goal-wrap" title="Goal for this day (blocks)">
+        <span class="day-goal-label">GOAL</span>
+        <input type="number" id="day-goal-input" class="mini-input" min="1" max="36" style="width:44px;text-align:center;font-size:11px;padding:4px 5px">
+      </div>
     </div>
     <div id="plan-active-banner" style="display:none;position:sticky;top:0;z-index:100;padding:8px 18px 0;background:var(--bg);border-bottom:1px solid var(--border)">
       <div id="plan-active-banner-inner" style="background:rgba(232,201,122,.1);border:1px solid rgba(232,201,122,.4);border-radius:8px;padding:8px 14px;display:flex;align-items:center;gap:10px;margin-bottom:8px">
@@ -210,15 +214,27 @@
       </div>
       <div class="block-focus-section" id="block-focus-leftoff-section" style="display:none">
         <div class="block-focus-section-label" style="display:flex;align-items:center;justify-content:space-between">
-          <span>📌 Left Off</span>
+          <span>📌 Previous Next Steps</span>
           <span id="block-focus-leftoff-date" style="color:var(--faint);font-size:9px"></span>
         </div>
         <div id="block-focus-leftoff-text"></div>
       </div>
-      <!-- Notes with markdown -->
+      <!-- Updates -->
       <div class="block-focus-section">
         <div class="block-focus-section-label" style="display:flex;align-items:center">
-          <span>Notes</span><span class="note-md-badge" style="margin-left:8px">.md</span>
+          <span>Updates</span><span class="note-md-badge" style="margin-left:8px">.md</span>
+        </div>
+        <div class="note-mode-bar">
+          <button class="note-mode-btn active" id="focus-updates-mode-edit">Edit</button>
+          <button class="note-mode-btn" id="focus-updates-mode-preview">Preview</button>
+        </div>
+        <textarea id="block-focus-updates-area" placeholder="What did you accomplish this session? (supports **markdown**)"></textarea>
+        <div class="md-preview" id="block-focus-updates-md-preview" style="display:none"></div>
+      </div>
+      <!-- General Notes with markdown -->
+      <div class="block-focus-section">
+        <div class="block-focus-section-label" style="display:flex;align-items:center">
+          <span>General Notes</span><span class="note-md-badge" style="margin-left:8px">.md</span>
         </div>
         <div class="note-mode-bar">
           <button class="note-mode-btn active" id="focus-mode-edit">Edit</button>
@@ -230,6 +246,18 @@
           <button id="block-focus-save-note">Save Note</button>
           <span id="focus-save-status" style="font-family:'DM Mono',monospace;font-size:10px;color:var(--green);opacity:0;transition:opacity .3s"></span>
         </div>
+      </div>
+      <!-- Next Steps -->
+      <div class="block-focus-section">
+        <div class="block-focus-section-label" style="display:flex;align-items:center">
+          <span>📌 Next Steps</span><span class="note-md-badge" style="margin-left:8px">.md</span>
+        </div>
+        <div class="note-mode-bar">
+          <button class="note-mode-btn active" id="focus-nextsteps-mode-edit">Edit</button>
+          <button class="note-mode-btn" id="focus-nextsteps-mode-preview">Preview</button>
+        </div>
+        <textarea id="block-focus-nextsteps-area" placeholder="What to pick up next time… (supports **markdown**)"></textarea>
+        <div class="md-preview" id="block-focus-nextsteps-md-preview" style="display:none"></div>
       </div>
       <div class="block-focus-section" id="block-focus-recent-notes-section" style="display:none">
         <div class="block-focus-section-label">Recent Notes</div>
@@ -401,23 +429,39 @@
         <span class="importance-label">TYPE</span>
         <button class="meeting-toggle-btn" id="notes-meeting-btn">📅 Meeting</button>
       </div>
-      <div id="notes-leftoff-wrapper">
-        <div class="notes-section-label" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
-          <span>📌 Left Off</span>
+      <div id="notes-updates-wrapper">
+        <div class="notes-section-label" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;margin-top:14px">
+          <span>Updates</span>
+          <div style="display:flex;gap:4px">
+            <button id="notes-updates-mode-edit" class="note-mode-btn active">EDIT</button>
+            <button id="notes-updates-mode-preview" class="note-mode-btn">PREVIEW</button>
+          </div>
         </div>
-        <textarea id="notes-resume-textarea" placeholder="Where did you leave off? (shown next time you open this project)"></textarea>
+        <textarea id="notes-updates-textarea" placeholder="What did you accomplish this session? (supports **markdown**)"></textarea>
+        <div id="notes-updates-md-preview" style="display:none;background:var(--bg);border:1px solid var(--border2);color:var(--text);font-family:Georgia,serif;font-size:11px;border-radius:8px;padding:9px 11px;min-height:48px;line-height:1.7;cursor:pointer"></div>
       </div>
-      <div class="notes-section-label" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;margin-top:14px">
-        <span>Notes</span>
+      <div class="notes-section-label" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;margin-top:14px">
+        <span>General Notes</span>
         <div style="display:flex;gap:4px">
-          <button id="notes-live-btn" class="tab-btn" style="padding:3px 8px;font-size:9px;border-bottom-width:1px;display:none">LIVE</button>
-          <button id="notes-mode-edit" class="tab-btn active" style="padding:3px 8px;font-size:9px;border-bottom-width:1px">EDIT</button>
-          <button id="notes-mode-preview" class="tab-btn" style="padding:3px 8px;font-size:9px;border-bottom-width:1px">PREVIEW</button>
+          <button id="notes-live-btn" class="note-mode-btn" style="display:none">LIVE</button>
+          <button id="notes-mode-edit" class="note-mode-btn active">EDIT</button>
+          <button id="notes-mode-preview" class="note-mode-btn">PREVIEW</button>
         </div>
       </div>
       <div id="notes-edit-area">
         <textarea id="notes-textarea" placeholder="Context, goals, or anything for this block… (supports **markdown**)"></textarea>
         <div id="notes-md-preview" style="display:none;background:var(--bg);border:1px solid var(--border2);color:var(--text);font-family:Georgia,serif;font-size:11px;border-radius:8px;padding:9px 11px;min-height:82px;line-height:1.7;cursor:pointer"></div>
+      </div>
+      <div id="notes-leftoff-wrapper">
+        <div class="notes-section-label" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;margin-top:14px">
+          <span>📌 Next Steps</span>
+          <div style="display:flex;gap:4px">
+            <button id="notes-resume-mode-edit" class="note-mode-btn active">EDIT</button>
+            <button id="notes-resume-mode-preview" class="note-mode-btn">PREVIEW</button>
+          </div>
+        </div>
+        <textarea id="notes-resume-textarea" placeholder="What to pick up next time? (supports **markdown**)"></textarea>
+        <div id="notes-resume-md-preview" style="display:none;background:var(--bg);border:1px solid var(--border2);color:var(--text);font-family:Georgia,serif;font-size:11px;border-radius:8px;padding:9px 11px;min-height:48px;line-height:1.7;cursor:pointer"></div>
       </div>
       <div id="block-proj-todos-section" style="display:none">
         <div class="notes-section-label notes-gap" style="display:flex;align-items:center;justify-content:space-between">
@@ -447,7 +491,7 @@
       <div id="bcp-label">block complete</div>
     </div>
     <div id="bcp-resume-section">
-      <div id="bcp-resume-label">where did you leave off?</div>
+      <div id="bcp-resume-label">Next Steps</div>
       <textarea id="bcp-resume-input" placeholder="What to pick up next time…"></textarea>
     </div>
     <div id="bcp-actions">

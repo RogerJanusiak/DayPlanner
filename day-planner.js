@@ -37,6 +37,7 @@ let state = {
     },
   ],
   days: {},
+  nextBlockId: 1,
   settings: {
     dailyGoal: 8,
     defaultBlockDuration: 30
@@ -71,7 +72,9 @@ let ui = {
   notesTabImportanceFilter: 0, // 0=All, 1-5=exact star rating
   notesTabTagFilter: [], // [] = All, else array of selected tag IDs
   notesTabMeetingFilter: false, // false=All, true=meetings only
-  notesTabLeftOffFilter: false, // true=only show entries with left-off note
+  notesTabLeftOffFilter: false, // true=only show entries with next steps note
+  notesTabUpdatesFilter: false, // true=only show entries with updates
+  notesTabNotesFilter: false, // true=only show entries with general notes
   notesTabImageFilter: false, // true=only show entries with embedded images
   notesIsStandalone: false, // true when modal is for a standalone project note
   notesProjId: null, // project id for standalone note modal
@@ -87,6 +90,10 @@ let ui = {
 // ════════════════════════════════════════════════════════════
 function todayStr() {
   const d = new Date();
+  const dayStartHour = (state.settings && state.settings.dayStartHour) || 0;
+  if (dayStartHour > 0 && d.getHours() < dayStartHour) {
+    d.setDate(d.getDate() - 1);
+  }
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 }
 
@@ -163,6 +170,22 @@ function blockSequentialNum(blockIdx, ds) {
   const starts = Object.keys(sched).map(Number).filter(i => !spannedSlots.has(i)).sort((a, b) => a - b);
   const pos = starts.indexOf(blockIdx);
   return pos >= 0 ? pos + 1 : null;
+}
+
+// Find the (date, blockIdx) for a globally-unique block ID
+function blockByGlobalId(blockId) {
+  for (const [ds, dayData] of Object.entries(state.days)) {
+    const ids = dayData.blockIds || {};
+    for (const [idxStr, bid] of Object.entries(ids)) {
+      if (bid === blockId) return { ds, blockIdx: +idxStr };
+    }
+  }
+  return null;
+}
+
+function allocateBlockId() {
+  if (!state.nextBlockId) state.nextBlockId = 1;
+  return state.nextBlockId++;
 }
 
 function escAttr(s) {
@@ -342,7 +365,9 @@ function save() {
       })
       .then(r => r.ok ? setServerStatus('saved') : setServerStatus('error'))
       .catch(() => setServerStatus('offline'));
-  } catch (e) {}
+  } catch (e) {
+    setServerStatus('error');
+  }
 }
 
 function setServerStatus(status) {
@@ -367,6 +392,7 @@ async function loadFromServer() {
     if (p.projects.length) state.projects = p.projects;
     if (p.settings && p.settings.dailyGoal) state.settings.dailyGoal = p.settings.dailyGoal;
     if (p.settings && p.settings.defaultBlockDuration) state.settings.defaultBlockDuration = p.settings.defaultBlockDuration;
+    if (p.nextBlockId) state.nextBlockId = Math.max(state.nextBlockId || 1, p.nextBlockId);
     if (p.projectTodos && Object.keys(p.projectTodos).length) state.projectTodos = p.projectTodos;
     if (p.projNotes && Object.keys(p.projNotes).length) state.projNotes = p.projNotes;
     if (Object.keys(p.days).length) Object.assign(state.days, p.days);
@@ -395,6 +421,7 @@ function load() {
   };
   if (!state.settings.defaultBlockDuration) state.settings.defaultBlockDuration = 30;
   if (state.settings.todosDefaultOpen === undefined) state.settings.todosDefaultOpen = true;
+  if (state.settings.dayStartHour === undefined) state.settings.dayStartHour = 0;
   if (state.settings.theme === undefined) state.settings.theme = 'dark';
   document.documentElement.dataset.theme = state.settings.theme === 'light' ? 'light' : '';
   if (!state.settings.tags) state.settings.tags = [
@@ -406,10 +433,22 @@ function load() {
   ];
   if (!state.projectTodos) state.projectTodos = {};
   if (!state.projNotes) state.projNotes = {};
-  Object.keys(state.days).forEach(ds => {
-    if (!state.days[ds].blockNotes) state.days[ds].blockNotes = {};
-    if (!state.days[ds].blockSpan) state.days[ds].blockSpan = {};
-    if (state.days[ds].timeOff === undefined) state.days[ds].timeOff = isWeekend(ds);
+  if (!state.nextBlockId) state.nextBlockId = 1;
+  Object.keys(state.days).sort().forEach(ds => {
+    const dayData = state.days[ds];
+    if (!dayData.blockNotes) dayData.blockNotes = {};
+    if (!dayData.blockSpan) dayData.blockSpan = {};
+    if (!dayData.blockIds) dayData.blockIds = {};
+    if (dayData.timeOff === undefined) dayData.timeOff = isWeekend(ds);
+    // Migrate: assign persistent IDs to any existing blocks that don't have one yet
+    const sched = dayData.schedule || {};
+    const spanned = new Set();
+    Object.entries(dayData.blockSpan).forEach(([si, sp]) => {
+      for (let i = 1; i < sp; i++) spanned.add(+si + i);
+    });
+    Object.keys(sched).map(Number).filter(i => !spanned.has(i)).sort((a, b) => a - b).forEach(idx => {
+      if (!dayData.blockIds[idx]) dayData.blockIds[idx] = state.nextBlockId++;
+    });
   });
   ensureForwardDays();
   save(); // persist the newly generated days
@@ -434,9 +473,9 @@ function restoreTimerState() {
   if (ts.startedAt) {
     totalElapsed += Date.now() - ts.startedAt;
   }
-  if (totalElapsed >= 30 * 60 * 1000) {
+  const blockIdx = ts.activeBlock;
+  if (totalElapsed >= getBlockDuration(blockIdx) * 1000) {
     // Block should be auto-completed
-    const blockIdx = ts.activeBlock;
     const ds = ts.date;
     const day = getDay(ds);
     if (!day.completed.includes(blockIdx)) {
@@ -485,6 +524,7 @@ function getDay(ds) {
   const d = state.days[ds];
   if (!d.blockNotes) d.blockNotes = {};
   if (!d.blockSpan) d.blockSpan = {};
+  if (!d.blockIds) d.blockIds = {};
   if (d.timeOff === undefined) d.timeOff = isWeekend(ds);
   return d;
 }
@@ -514,6 +554,7 @@ function toYaml() {
   L.push('settings:');
   L.push(`  dailyGoal: ${dailyGoal()}`);
   L.push(`  defaultBlockDuration: ${state.settings.defaultBlockDuration || 30}`);
+  L.push(`  nextBlockId: ${state.nextBlockId || 1}`);
   L.push('');
 
   // timerState — active block timer (only written when a block is active)
@@ -588,19 +629,19 @@ function toYaml() {
     if (data.timeOff) L.push('    timeOff: true');
 
     const sched = data.schedule || {};
+    // Build sequential map for this day — used in schedule, blockSpan, and blockNotes sections
+    const schedSpannedSlots = new Set();
+    Object.entries(data.blockSpan || {}).forEach(([si, sp]) => {
+      for (let i = 1; i < sp; i++) schedSpannedSlots.add(+si + i);
+    });
+    const schedStarts = Object.keys(sched).map(Number).filter(i => !schedSpannedSlots.has(i)).sort((a, b) => a - b);
     if (Object.keys(sched).length) {
       L.push('    schedule:');
-      // Build sequential map for this day's schedule
-      const schedSpannedSlots = new Set();
-      Object.entries(data.blockSpan || {}).forEach(([si, sp]) => {
-        for (let i = 1; i < sp; i++) schedSpannedSlots.add(+si + i);
-      });
-      const schedStarts = Object.keys(sched).map(Number).filter(i => !schedSpannedSlots.has(i)).sort((a, b) => a - b);
       Object.entries(sched).sort((a, b) => +a[0] - +b[0]).forEach(([idx, pid]) => {
-        const [h, half] = blockToTime(+idx);
         const seqPos = schedStarts.indexOf(+idx);
-        const blockLabel = seqPos >= 0 ? `Block ${seqPos + 1}` : formatTime(h, half);
-        L.push(`      ${idx}: ${yStr(pid)}  # ${blockLabel} · ${formatTime(h,half)}`);
+        const blockId = (data.blockIds || {})[+idx];
+        const blockLabel = blockId != null ? `#${blockId}` : (seqPos >= 0 ? `Block ${seqPos + 1}` : `slot ${idx}`);
+        L.push(`      ${idx}: ${yStr(pid)}  # ${blockLabel}`);
       });
     }
 
@@ -612,10 +653,19 @@ function toYaml() {
     if (spans.length) {
       L.push('    blockSpan:');
       spans.forEach(([idx, sp]) => {
-        const [h, half] = blockToTime(+idx);
         const seqPos = schedStarts.indexOf(+idx);
-        const blockLabel = seqPos >= 0 ? `Block ${seqPos + 1}` : formatTime(h, half);
-        L.push(`      ${idx}: ${sp}  # ${blockLabel} · ${formatTime(h,half)}`);
+        const blockId = (data.blockIds || {})[+idx];
+        const blockLabel = blockId != null ? `#${blockId}` : (seqPos >= 0 ? `Block ${seqPos + 1}` : `slot ${idx}`);
+        L.push(`      ${idx}: ${sp}  # ${blockLabel}`);
+      });
+    }
+
+    // blockIds — persistent global block IDs
+    const blockIdEntries = Object.entries(data.blockIds || {}).filter(([idx]) => data.schedule[idx]);
+    if (blockIdEntries.length) {
+      L.push('    blockIds:');
+      blockIdEntries.sort((a, b) => +a[0] - +b[0]).forEach(([idx, bid]) => {
+        L.push(`      ${idx}: ${bid}`);
       });
     }
 
@@ -623,19 +673,20 @@ function toYaml() {
     const notes = data.blockNotes || {};
     const noteEntries = Object.entries(notes).filter(([, n]) =>
       (n.note || '').trim() || (n.todos || []).length || (n.projTodos || []).length ||
-      n.importance || (n.tags || []).length || n.meeting || (n.resumeNote || '').trim()
+      n.importance || (n.tags || []).length || n.meeting || (n.resumeNote || '').trim() || (n.updates || '').trim()
     );
     if (noteEntries.length) {
       L.push('    blockNotes:');
       noteEntries.forEach(([idx, n]) => {
-        const [h, half] = blockToTime(+idx);
         const seqPos = schedStarts.indexOf(+idx);
-        const blockLabel = seqPos >= 0 ? `Block ${seqPos + 1}` : formatTime(h, half);
-        L.push(`      ${idx}:  # ${blockLabel} · ${formatTime(h,half)}`);
+        const blockId = (data.blockIds || {})[+idx];
+        const blockLabel = blockId != null ? `#${blockId}` : (seqPos >= 0 ? `Block ${seqPos + 1}` : `slot ${idx}`);
+        L.push(`      ${idx}:  # ${blockLabel}`);
         if (n.importance) L.push(`        importance: ${n.importance}`);
         if (n.meeting) L.push('        meeting: true');
         if ((n.tags || []).length) L.push(`        tags: [${n.tags.map(yStr).join(', ')}]`);
         if ((n.resumeNote || '').trim()) L.push(`        resumeNote: ${yStr(n.resumeNote)}`);
+        if ((n.updates || '').trim()) L.push(`        updates: ${yStr(n.updates)}`);
         if ((n.note || '').trim()) L.push(`        note: ${yStr(n.note)}`);
         if ((n.todos || []).length) {
           L.push('        todos:');
@@ -664,7 +715,8 @@ function parseYaml(text) {
     days: {},
     settings: {},
     projectTodos: {},
-    projNotes: {}
+    projNotes: {},
+    nextBlockId: null
   };
   // We use a simple indentation-aware state machine
   let mode = null; // 'settings'|'projects'|'projectTodos'|'days'
@@ -731,6 +783,8 @@ function parseYaml(text) {
       if (mGoal) result.settings.dailyGoal = +mGoal[1];
       const mDur = trim.match(/^defaultBlockDuration:\s*(\d+)/);
       if (mDur) result.settings.defaultBlockDuration = +mDur[1];
+      const mNBI = trim.match(/^nextBlockId:\s*(\d+)/);
+      if (mNBI) result.nextBlockId = +mNBI[1];
       continue;
     }
 
@@ -912,6 +966,11 @@ function parseYaml(text) {
           inNoteSection = null;
           continue;
         }
+        if (trim === 'blockIds:') {
+          inSection = 'blockIds';
+          inNoteSection = null;
+          continue;
+        }
         if (trim.startsWith('completed:')) {
           inSection = null;
           const nums = trim.match(/\d+/g);
@@ -925,6 +984,15 @@ function parseYaml(text) {
         if (m) {
           if (!result.days[curDay].blockSpan) result.days[curDay].blockSpan = {};
           result.days[curDay].blockSpan[m[1]] = +m[2];
+        }
+        continue;
+      }
+
+      if (inSection === 'blockIds' && indent === 6) {
+        const m = trim.match(/^(\d+):\s*(\d+)/);
+        if (m) {
+          if (!result.days[curDay].blockIds) result.days[curDay].blockIds = {};
+          result.days[curDay].blockIds[m[1]] = +m[2];
         }
         continue;
       }
@@ -978,6 +1046,11 @@ function parseYaml(text) {
             const rnm = trim.match(/^resumeNote:\s*"((?:[^"\\]|\\.)*)"/);
             if (rnm) {
               result.days[curDay].blockNotes[curNoteIdx].resumeNote = rnm[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+              continue;
+            }
+            const um = trim.match(/^updates:\s*"((?:[^"\\]|\\.)*)"/);
+            if (um) {
+              result.days[curDay].blockNotes[curNoteIdx].updates = um[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
               continue;
             }
             const tgm = trim.match(/^tags:\s*\[([^\]]*)\]/);
@@ -1498,7 +1571,7 @@ function renderPivotPicker() {
       const [h, half] = blockToTime(idx);
       const btn = document.createElement('button');
       btn.className = 'pivot-pick-btn';
-      btn.innerHTML = `<span class="pivot-pick-color" style="background:${proj.color}"></span><span class="pivot-pick-name">${escHtml(proj.emoji + ' ' + proj.name)}</span><span class="pivot-pick-time">${formatTime(h, half)}</span>`;
+      btn.innerHTML = `<span class="pivot-pick-color" style="background:${proj.color}"></span><span class="pivot-pick-name">${escHtml(proj.emoji + ' ' + proj.name)}</span>`;
       btn.onclick = () => { closePivotPicker(); startPivot(idx); };
       list.appendChild(btn);
     });
@@ -1636,16 +1709,19 @@ function shiftBlocksForward(day, fromIdx) {
   if (!day.schedule) day.schedule = {};
   if (!day.blockSpan) day.blockSpan = {};
   if (!day.blockNotes) day.blockNotes = {};
+  if (!day.blockIds) day.blockIds = {};
   for (let i = 35; i >= fromIdx; i--) {
     const dest = i + 1;
     if (dest <= 35) {
       if (day.schedule[i] !== undefined) day.schedule[dest] = day.schedule[i];
       if (day.blockSpan[i] !== undefined) day.blockSpan[dest] = day.blockSpan[i];
       if (day.blockNotes[i] !== undefined) day.blockNotes[dest] = day.blockNotes[i];
+      if (day.blockIds[i] !== undefined) day.blockIds[dest] = day.blockIds[i];
     }
     delete day.schedule[i];
     delete day.blockSpan[i];
     delete day.blockNotes[i];
+    delete day.blockIds[i];
   }
   day.completed = (day.completed || []).map(i => i >= fromIdx ? Math.min(i + 1, 35) : i);
 }
@@ -1656,16 +1732,19 @@ function shiftBlocksBackward(day, fromIdx) {
   if (!day.schedule) return;
   if (!day.blockSpan) day.blockSpan = {};
   if (!day.blockNotes) day.blockNotes = {};
+  if (!day.blockIds) day.blockIds = {};
   for (let i = fromIdx; i <= 35; i++) {
     const src = i + 1;
     if (src <= 35) {
       if (day.schedule[src] !== undefined) day.schedule[i] = day.schedule[src]; else delete day.schedule[i];
       if (day.blockSpan[src] !== undefined) day.blockSpan[i] = day.blockSpan[src]; else delete day.blockSpan[i];
       if (day.blockNotes[src] !== undefined) day.blockNotes[i] = day.blockNotes[src]; else delete day.blockNotes[i];
+      if (day.blockIds[src] !== undefined) day.blockIds[i] = day.blockIds[src]; else delete day.blockIds[i];
     } else {
       delete day.schedule[i];
       delete day.blockSpan[i];
       delete day.blockNotes[i];
+      delete day.blockIds[i];
     }
   }
   day.completed = (day.completed || []).map(i => i >= fromIdx ? i - 1 : i);
@@ -1702,8 +1781,9 @@ function extendBlock(blockIdx) {
   const projId = (day.schedule || {})[blockIdx];
   if (!projId) return;
   if (!day.blockSpan) day.blockSpan = {};
-  // If the next slot has a different project, push everything back to make room
-  if (day.schedule[blockIdx + 1] && day.schedule[blockIdx + 1] !== projId) {
+  // Push back if the next slot is occupied — always shift if it's a 1-hr block (even same project)
+  const _nextSpan1 = (day.blockSpan[blockIdx + 1] || 1);
+  if (day.schedule[blockIdx + 1] && (day.schedule[blockIdx + 1] !== projId || _nextSpan1 >= 2)) {
     shiftBlocksForward(day, blockIdx + 1);
   }
   // Clear the next slot and set this block to 1-hour span
@@ -1733,8 +1813,9 @@ function extendBlockFromAlarm(completedIdx) {
   const projId = (day.schedule || {})[completedIdx];
   if (!projId) return;
   if (!day.blockSpan) day.blockSpan = {};
-  // If the next slot has a different project, push everything back to make room
-  if (day.schedule[completedIdx + 1] && day.schedule[completedIdx + 1] !== projId) {
+  // Push back if the next slot is occupied — always shift if it's a 1-hr block (even same project)
+  const _nextSpan2 = (day.blockSpan[completedIdx + 1] || 1);
+  if (day.schedule[completedIdx + 1] && (day.schedule[completedIdx + 1] !== projId || _nextSpan2 >= 2)) {
     shiftBlocksForward(day, completedIdx + 1);
   }
   // Expand to 1-hour block
@@ -1796,6 +1877,8 @@ function assignBlock(blockIdx, projId) {
     delete day.blockNotes[blockIdx];
   }
   day.schedule[blockIdx] = projId;
+  if (!day.blockIds) day.blockIds = {};
+  if (!day.blockIds[blockIdx]) day.blockIds[blockIdx] = allocateBlockId();
   setDay(ui.currentDate, day);
   save();
   closeDropdown();
@@ -1829,6 +1912,8 @@ function assignBlock1hr(blockIdx, projId) {
   day.schedule[blockIdx] = projId;
   day.schedule[blockIdx + 1] = projId;
   day.blockSpan[blockIdx] = 2; // marks as 1-hour span start
+  if (!day.blockIds) day.blockIds = {};
+  if (!day.blockIds[blockIdx]) day.blockIds[blockIdx] = allocateBlockId();
   setDay(ui.currentDate, day);
   save();
   closeDropdown();
@@ -1861,6 +1946,7 @@ function clearBlock(blockIdx) {
     if (day.blockNotes) delete day.blockNotes[blockIdx + i];
   }
   if (day.blockSpan) delete day.blockSpan[blockIdx];
+  if (day.blockIds) delete day.blockIds[blockIdx];
   day.completed = (day.completed || []).filter(i => i < blockIdx || i >= blockIdx + span);
   // Shift all subsequent blocks backward to close the gap
   for (let s = 0; s < span; s++) shiftBlocksBackward(day, blockIdx);
@@ -1879,7 +1965,9 @@ function moveBlock(fromIdx, toIdx) {
   const sched = day.schedule || {};
   const notes = day.blockNotes || {};
   if (!day.blockSpan) day.blockSpan = {};
+  if (!day.blockIds) day.blockIds = {};
   const spans = day.blockSpan;
+  const ids = day.blockIds;
 
   const fromSpan = spans[fromIdx] || 1;
 
@@ -1889,10 +1977,12 @@ function moveBlock(fromIdx, toIdx) {
 
     const fp0 = sched[fromIdx], fp1 = sched[fromIdx + 1];
     const fn0 = notes[fromIdx];
+    const fi0 = ids[fromIdx];
     const fd0 = day.completed.includes(fromIdx);
 
     const tp0 = sched[toIdx], tp1 = sched[toIdx + 1];
     const tn0 = notes[toIdx], tn1 = notes[toIdx + 1];
+    const ti0 = ids[toIdx];
     const td0 = day.completed.includes(toIdx), td1 = day.completed.includes(toIdx + 1);
     const toSpan0 = spans[toIdx] || 1;
 
@@ -1901,6 +1991,7 @@ function moveBlock(fromIdx, toIdx) {
     spans[toIdx] = 2; delete spans[toIdx + 1];
     if (fn0) notes[toIdx] = fn0; else delete notes[toIdx];
     delete notes[toIdx + 1];
+    if (fi0 !== undefined) ids[toIdx] = fi0; else delete ids[toIdx];
 
     // Place destination's content back at source slots
     if (tp0) sched[fromIdx] = tp0; else delete sched[fromIdx];
@@ -1909,6 +2000,7 @@ function moveBlock(fromIdx, toIdx) {
     if (toSpan0 >= 2) spans[fromIdx] = 2;
     if (tn0) notes[fromIdx] = tn0; else delete notes[fromIdx];
     if (tn1) notes[fromIdx + 1] = tn1; else delete notes[fromIdx + 1];
+    if (ti0 !== undefined) ids[fromIdx] = ti0; else delete ids[fromIdx];
 
     day.completed = day.completed.filter(i => i !== fromIdx && i !== fromIdx + 1 && i !== toIdx && i !== toIdx + 1);
     if (fd0) day.completed.push(toIdx);
@@ -1926,6 +2018,9 @@ function moveBlock(fromIdx, toIdx) {
     const fromNote = notes[fromIdx], toNote = notes[toIdx];
     if (fromNote) notes[toIdx] = fromNote; else delete notes[toIdx];
     if (toNote) notes[fromIdx] = toNote; else delete notes[fromIdx];
+    const fromId = ids[fromIdx], toId = ids[toIdx];
+    if (fromId !== undefined) ids[toIdx] = fromId; else delete ids[toIdx];
+    if (toId !== undefined) ids[fromIdx] = toId; else delete ids[fromIdx];
     const fromDone = day.completed.includes(fromIdx), toDone = day.completed.includes(toIdx);
     day.completed = day.completed.filter(i => i !== fromIdx && i !== toIdx);
     if (fromDone) day.completed.push(toIdx);
@@ -2003,12 +2098,14 @@ function openNotesModal(blockIdx, ds, notesOnly) {
   };
   document.getElementById('notes-modal-proj').textContent = proj ? `${proj.emoji} ${proj.name}` : 'Block';
   document.getElementById('notes-modal-proj').style.color = proj ? proj.color : 'var(--text)';
-  const seqNum = blockSequentialNum(blockIdx, ui.notesDate);
-  document.getElementById('notes-modal-time').textContent = seqNum !== null ? `Block ${seqNum}` : formatTime(h, half);
+  const globalBlockId = (getDay(ui.notesDate).blockIds || {})[blockIdx];
+  document.getElementById('notes-modal-time').textContent = globalBlockId != null ? `#${globalBlockId}` : '';
   document.getElementById('notes-textarea').value = ex.note || '';
   document.getElementById('notes-textarea')._savedValue = ex.note || '';
   const resumeTextarea = document.getElementById('notes-resume-textarea');
   if (resumeTextarea) resumeTextarea.value = ex.resumeNote || '';
+  const updatesTextarea = document.getElementById('notes-updates-textarea');
+  if (updatesTextarea) updatesTextarea.value = ex.updates || '';
   // Importance stars
   const impVal = ex.importance || 0;
 
@@ -2042,7 +2139,69 @@ function openNotesModal(blockIdx, ds, notesOnly) {
   const meetingBtn = document.getElementById('notes-meeting-btn');
   meetingBtn.classList.toggle('active', !!ex.meeting);
   meetingBtn.onclick = () => meetingBtn.classList.toggle('active');
-  // Markdown edit/preview setup
+  // ── Updates edit/preview setup ──
+  const updatesTA = document.getElementById('notes-updates-textarea');
+  const updatesMdPrev = document.getElementById('notes-updates-md-preview');
+  const updatesEditB = document.getElementById('notes-updates-mode-edit');
+  const updatesPreviewB = document.getElementById('notes-updates-mode-preview');
+  if (updatesTA && updatesMdPrev && updatesEditB && updatesPreviewB) {
+    updatesTA.style.display = '';
+    updatesMdPrev.style.display = 'none';
+    updatesEditB.classList.add('active');
+    updatesPreviewB.classList.remove('active');
+    updatesEditB.onclick = () => {
+      updatesTA.style.display = '';
+      updatesMdPrev.style.display = 'none';
+      updatesEditB.classList.add('active');
+      updatesPreviewB.classList.remove('active');
+    };
+    updatesPreviewB.onclick = () => {
+      updatesMdPrev.innerHTML = renderMarkdown(updatesTA.value);
+      updatesTA.style.display = 'none';
+      updatesMdPrev.style.display = 'block';
+      updatesPreviewB.classList.add('active');
+      updatesEditB.classList.remove('active');
+    };
+    updatesMdPrev.onclick = () => {
+      updatesTA.style.display = '';
+      updatesMdPrev.style.display = 'none';
+      updatesEditB.classList.add('active');
+      updatesPreviewB.classList.remove('active');
+    };
+  }
+
+  // ── Next Steps edit/preview setup ──
+  const resumeTA = document.getElementById('notes-resume-textarea');
+  const resumeMdPrev = document.getElementById('notes-resume-md-preview');
+  const resumeEditB = document.getElementById('notes-resume-mode-edit');
+  const resumePreviewB = document.getElementById('notes-resume-mode-preview');
+  if (resumeTA && resumeMdPrev && resumeEditB && resumePreviewB) {
+    resumeTA.style.display = '';
+    resumeMdPrev.style.display = 'none';
+    resumeEditB.classList.add('active');
+    resumePreviewB.classList.remove('active');
+    resumeEditB.onclick = () => {
+      resumeTA.style.display = '';
+      resumeMdPrev.style.display = 'none';
+      resumeEditB.classList.add('active');
+      resumePreviewB.classList.remove('active');
+    };
+    resumePreviewB.onclick = () => {
+      resumeMdPrev.innerHTML = renderMarkdown(resumeTA.value);
+      resumeTA.style.display = 'none';
+      resumeMdPrev.style.display = 'block';
+      resumePreviewB.classList.add('active');
+      resumeEditB.classList.remove('active');
+    };
+    resumeMdPrev.onclick = () => {
+      resumeTA.style.display = '';
+      resumeMdPrev.style.display = 'none';
+      resumeEditB.classList.add('active');
+      resumePreviewB.classList.remove('active');
+    };
+  }
+
+  // ── General Notes markdown edit/preview setup ──
   const modal = document.getElementById('notes-modal');
   const textarea = document.getElementById('notes-textarea');
   const preview = document.getElementById('notes-md-preview');
@@ -2162,6 +2321,22 @@ function openProjNoteModal(projId, noteId) {
   meetingBtn.classList.toggle('active', !!existing.meeting);
   meetingBtn.onclick = () => meetingBtn.classList.toggle('active');
 
+  // Reset Updates/Next Steps buttons to edit mode (sections are hidden in standalone but handlers should be clean)
+  const _uEditB = document.getElementById('notes-updates-mode-edit');
+  const _uPrevB = document.getElementById('notes-updates-mode-preview');
+  const _uPrevEl = document.getElementById('notes-updates-md-preview');
+  const _uTA = document.getElementById('notes-updates-textarea');
+  if (_uEditB) { _uEditB.classList.add('active'); _uPrevB.classList.remove('active'); }
+  if (_uPrevEl) _uPrevEl.style.display = 'none';
+  if (_uTA) _uTA.style.display = '';
+  const _rEditB = document.getElementById('notes-resume-mode-edit');
+  const _rPrevB = document.getElementById('notes-resume-mode-preview');
+  const _rPrevEl = document.getElementById('notes-resume-md-preview');
+  const _rTA = document.getElementById('notes-resume-textarea');
+  if (_rEditB) { _rEditB.classList.add('active'); _rPrevB.classList.remove('active'); }
+  if (_rPrevEl) _rPrevEl.style.display = 'none';
+  if (_rTA) _rTA.style.display = '';
+
   const modal = document.getElementById('notes-modal');
   const textarea = document.getElementById('notes-textarea');
   const preview = document.getElementById('notes-md-preview');
@@ -2228,6 +2403,7 @@ function saveNotesModal() {
     ds = ui.notesDate;
   const note = document.getElementById('notes-textarea').value;
   const resumeNote = (document.getElementById('notes-resume-textarea')?.value || '').trim() || undefined;
+  const updates = (document.getElementById('notes-updates-textarea')?.value || '').trim() || undefined;
   const importance = [...document.querySelectorAll('#star-picker .star-btn')].filter(b => b.classList.contains('active')).length || null;
   const tags = [...document.querySelectorAll('#notes-tag-picker .tag-pill-btn.active')].map(b => b.dataset.tagId);
   const meeting = document.getElementById('notes-meeting-btn').classList.contains('active') || undefined;
@@ -2237,6 +2413,7 @@ function saveNotesModal() {
   day.blockNotes[blockIdx] = {
     note,
     resumeNote,
+    updates,
     todos: [],
     projTodos: existingProjTodos,
     importance,
@@ -2757,8 +2934,7 @@ function renderTodayTodos() {
           idx,
           proj
         } = entry;
-        const [h, half] = blockToTime(idx);
-        item.innerHTML = `<input type="checkbox" class="today-todo-cb daily-cb" title="Mark done"><span class="today-todo-label">${escAttr(t.text)}</span>${proj?`<span style="font-family:'DM Mono',monospace;font-size:9px;color:${proj.color};margin-left:auto">${proj.emoji} ${formatTime(h,half)}</span>`:''}`;
+        item.innerHTML = `<input type="checkbox" class="today-todo-cb daily-cb" title="Mark done"><span class="today-todo-label">${escAttr(t.text)}</span>${proj?`<span style="font-family:'DM Mono',monospace;font-size:9px;color:${proj.color};margin-left:auto">${proj.emoji}</span>`:''}`;
         item.querySelector('.today-todo-cb').addEventListener('change', e => {
           const dayD = getDay(ds);
           const bn = dayD.blockNotes[idx];
@@ -2906,6 +3082,8 @@ function renderDateNav() {
   const day = currentDayData();
   const btn = document.getElementById('timeoff-btn');
   btn.classList.toggle('on', !!day.timeOff);
+  // per-day goal input
+  document.getElementById('day-goal-input').value = dailyGoalForDay(ui.currentDate);
 }
 
 // ════════════════════════════════════════════════════════════
@@ -3181,6 +3359,25 @@ function renderSettingsPanel() {
     this.classList.toggle('on', state.settings.todosDefaultOpen);
   };
   prefSection.appendChild(todoPref);
+
+  // Day start hour
+  const dayStartPref = document.createElement('div');
+  dayStartPref.className = 'settings-pref-row';
+  const currentDayStartHour = state.settings.dayStartHour || 0;
+  dayStartPref.innerHTML = `<div class="settings-pref-label">
+    <div class="settings-pref-name">Day starts at (hour)</div>
+    <div class="settings-pref-desc">The day won't roll over until this hour — e.g. set to 4 to keep working past midnight without switching to the next day</div>
+  </div>
+  <input type="number" id="sp-daystart-input" class="mini-input" min="0" max="6" value="${currentDayStartHour}" style="width:52px;text-align:center">`;
+  const spDayStartInp = dayStartPref.querySelector('#sp-daystart-input');
+  spDayStartInp.onchange = () => {
+    const v = Math.max(0, Math.min(6, +spDayStartInp.value || 0));
+    spDayStartInp.value = v;
+    state.settings.dayStartHour = v;
+    save();
+  };
+  prefSection.appendChild(dayStartPref);
+
   body.appendChild(prefSection);
 
   // ── Data ──
@@ -3504,8 +3701,7 @@ function renderPlanBanner() {
   if (!planBanner) return;
   if (ui.activeBlock !== null && isToday()) {
     const proj = getProject((currentDayData().schedule || {})[ui.activeBlock]);
-    const [bh, bhalf] = blockToTime(ui.activeBlock);
-    if (planBannerName) planBannerName.textContent = `● Active: ${proj?`${proj.emoji} ${proj.name}`:'block'} · ${formatTime(bh,bhalf)} · ${formatSecs(getTimerRemaining())} remaining`;
+    if (planBannerName) planBannerName.textContent = `● Active: ${proj?`${proj.emoji} ${proj.name}`:'block'} · ${formatSecs(getTimerRemaining())} remaining`;
     planBanner.style.display = 'block';
     if (planBannerBtn) planBannerBtn.onclick = () => {
       switchTab('today');
@@ -4117,8 +4313,9 @@ function applyInlineMd(text) {
     .replace(/__(.+?)__/g, '<strong>$1</strong>')
     .replace(/_([^_\n]+?)_/g, '<em>$1</em>')
     .replace(/~~(.+?)~~/g, '<span style="text-decoration:line-through;color:var(--faint)">$1</span>')
-    .replace(/!\[([^\]]*)\]\((data:[^)]+|[^)]+)\)/g, '<img src="$2" alt="$1" style="max-width:100%;border-radius:4px;display:block;margin:4px 0">')
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+    .replace(/!\[([^\]]*)\]\((data:[^)]+|[^)]+)\)/g, (_, alt, src) => `<img src="${src.startsWith('data:') ? src : src.replace(/ /g, '%20')}" alt="${alt}" style="max-width:100%;border-radius:4px;display:block;margin:4px 0">`)
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>')
+    .replace(/(?<!\w)#(\d+)/g, '<a class="block-ref-link" data-blocknum="$1" href="#">#$1</a>');
   return text.replace(/\x00(\d+)\x00/g, (_, i) => codespans[+i]);
 }
 
@@ -4287,20 +4484,16 @@ function renderBlockFocus() {
     note: '',
     todos: []
   };
-  const [h, half] = blockToTime(blockIdx);
-  const span = (day.blockSpan || {})[blockIdx] || 1;
-  const timeLabel = span >= 2 ? `${formatTime(h,half)} → ${formatTime(...blockToTime(blockIdx+span))}` : `${formatTime(h,half)}`;
-
   // Header
   document.getElementById('block-focus-title').textContent = proj ? `${proj.emoji} ${proj.name}` : 'Block';
   document.getElementById('block-focus-title').style.color = proj ? proj.color : 'var(--text)';
-  // Show countdown if timer is running for this block, otherwise fall back to time range
   const focusTimeEl = document.getElementById('block-focus-time');
   if (ui.activeBlock === blockIdx && ui.timerRunning) {
     focusTimeEl.textContent = formatSecs(getTimerRemaining());
     focusTimeEl.dataset.countdown = '1';
   } else {
-    focusTimeEl.textContent = timeLabel;
+    const globalBlockId = (day.blockIds || {})[blockIdx];
+    focusTimeEl.textContent = globalBlockId != null ? `#${globalBlockId}` : '';
     focusTimeEl.dataset.countdown = '';
   }
 
@@ -4429,6 +4622,84 @@ function renderBlockFocus() {
     focusTagPicker.appendChild(btn);
   });
 
+  // ── Updates area with markdown ──
+  const updatesArea = document.getElementById('block-focus-updates-area');
+  const updatesMdPreview = document.getElementById('block-focus-updates-md-preview');
+  const updatesEditBtn = document.getElementById('focus-updates-mode-edit');
+  const updatesPreviewBtn = document.getElementById('focus-updates-mode-preview');
+  if (updatesArea) {
+    updatesArea.value = bn.updates || '';
+    const saveUpdates = () => {
+      const dayD = getDay(ds);
+      if (!dayD.blockNotes[blockIdx]) dayD.blockNotes[blockIdx] = { note: '', todos: [] };
+      dayD.blockNotes[blockIdx].updates = updatesArea.value;
+      setDay(ds, dayD);
+      save();
+    };
+    updatesArea.onblur = saveUpdates;
+    if (updatesEditBtn && updatesPreviewBtn && updatesMdPreview) {
+      updatesEditBtn.onclick = () => {
+        updatesArea.style.display = '';
+        updatesMdPreview.style.display = 'none';
+        updatesEditBtn.classList.add('active');
+        updatesPreviewBtn.classList.remove('active');
+      };
+      updatesPreviewBtn.onclick = () => {
+        saveUpdates();
+        updatesMdPreview.innerHTML = renderMarkdown(updatesArea.value);
+        updatesArea.style.display = 'none';
+        updatesMdPreview.style.display = 'block';
+        updatesPreviewBtn.classList.add('active');
+        updatesEditBtn.classList.remove('active');
+      };
+      updatesMdPreview.onclick = () => updatesEditBtn.onclick();
+      // Start in edit mode
+      updatesArea.style.display = '';
+      updatesMdPreview.style.display = 'none';
+      updatesEditBtn.classList.add('active');
+      updatesPreviewBtn.classList.remove('active');
+    }
+  }
+
+  // ── Next Steps area with markdown ──
+  const nextStepsArea = document.getElementById('block-focus-nextsteps-area');
+  const nextStepsMdPreview = document.getElementById('block-focus-nextsteps-md-preview');
+  const nextStepsEditBtn = document.getElementById('focus-nextsteps-mode-edit');
+  const nextStepsPreviewBtn = document.getElementById('focus-nextsteps-mode-preview');
+  if (nextStepsArea) {
+    nextStepsArea.value = bn.resumeNote || '';
+    const saveNextSteps = () => {
+      const dayD = getDay(ds);
+      if (!dayD.blockNotes[blockIdx]) dayD.blockNotes[blockIdx] = { note: '', todos: [] };
+      dayD.blockNotes[blockIdx].resumeNote = nextStepsArea.value;
+      setDay(ds, dayD);
+      save();
+    };
+    nextStepsArea.onblur = saveNextSteps;
+    if (nextStepsEditBtn && nextStepsPreviewBtn && nextStepsMdPreview) {
+      nextStepsEditBtn.onclick = () => {
+        nextStepsArea.style.display = '';
+        nextStepsMdPreview.style.display = 'none';
+        nextStepsEditBtn.classList.add('active');
+        nextStepsPreviewBtn.classList.remove('active');
+      };
+      nextStepsPreviewBtn.onclick = () => {
+        saveNextSteps();
+        nextStepsMdPreview.innerHTML = renderMarkdown(nextStepsArea.value);
+        nextStepsArea.style.display = 'none';
+        nextStepsMdPreview.style.display = 'block';
+        nextStepsPreviewBtn.classList.add('active');
+        nextStepsEditBtn.classList.remove('active');
+      };
+      nextStepsMdPreview.onclick = () => nextStepsEditBtn.onclick();
+      // Start in edit mode
+      nextStepsArea.style.display = '';
+      nextStepsMdPreview.style.display = 'none';
+      nextStepsEditBtn.classList.add('active');
+      nextStepsPreviewBtn.classList.remove('active');
+    }
+  }
+
   // ── Note with dirty-state tracking + markdown ──
   const noteArea = document.getElementById('block-focus-note-area');
   const mdPreview = document.getElementById('block-focus-md-preview');
@@ -4500,7 +4771,7 @@ function renderBlockFocus() {
     if (latestResume) {
       leftOffSection.style.display = '';
       leftOffDate.textContent = formatDateLabel(latestResume.ds);
-      leftOffText.textContent = latestResume.resumeNote;
+      leftOffText.innerHTML = renderMarkdown(latestResume.resumeNote);
     } else {
       leftOffSection.style.display = 'none';
     }
@@ -4719,23 +4990,19 @@ function renderTodayNotes() {
   const sched = day.schedule || {};
   const blockNotes = day.blockNotes || {};
 
-  // Collect blocks that have a note (not just todos)
+  // Collect blocks that have any note content
   const entries = [];
   Object.entries(blockNotes).forEach(([idxStr, bn]) => {
     const note = (bn.note || '').trim();
-    if (!note) return;
+    const updates = (bn.updates || '').trim();
+    const resumeNote = (bn.resumeNote || '').trim();
+    if (!note && !updates && !resumeNote) return;
     const idx = +idxStr;
     const projId = sched[idx];
     if (!projId) return;
     const proj = getProject(projId);
     if (!proj) return;
-    const [h, half] = blockToTime(idx);
-    entries.push({
-      idx,
-      proj,
-      note,
-      timeLabel: formatTime(h, half)
-    });
+    entries.push({ idx, proj, note, updates, resumeNote });
   });
 
   entries.sort((a, b) => a.idx - b.idx);
@@ -4747,14 +5014,17 @@ function renderTodayNotes() {
   sec.style.display = '';
 
   entries.forEach(e => {
+    const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     const card = document.createElement('div');
     card.className = 'today-note-card';
+    let bodyHtml = '';
+    if (e.updates) bodyHtml += `<div class="today-note-section-label" style="font-size:8px;color:var(--teal);text-transform:uppercase;letter-spacing:.06em;margin-bottom:2px">Updates</div><div class="today-note-body" style="margin-bottom:6px">${esc(e.updates)}</div>`;
+    if (e.note) bodyHtml += `<div class="today-note-section-label" style="font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:2px">General Notes</div><div class="today-note-body" style="margin-bottom:6px">${esc(e.note)}</div>`;
+    if (e.resumeNote) bodyHtml += `<div class="today-note-section-label" style="font-size:8px;color:var(--gold);text-transform:uppercase;letter-spacing:.06em;margin-bottom:2px">Next Steps</div><div class="today-note-body">${esc(e.resumeNote)}</div>`;
     card.innerHTML = `<div class="today-note-header">
       <div class="today-note-dot" style="background:${e.proj.color}"></div>
       <div class="today-note-proj" style="color:${e.proj.color}">${e.proj.emoji} ${e.proj.name}</div>
-      <div class="today-note-time">${e.timeLabel}</div>
-    </div>
-    <div class="today-note-body">${e.note.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div>`;
+    </div>${bodyHtml}`;
     card.onclick = () => openNotesModal(e.idx);
     list.appendChild(card);
   });
@@ -4781,11 +5051,9 @@ function renderDayflowMini() {
   }) => {
     const isCompleted = done.has(idx),
       isActive = ui.activeBlock === idx;
-    const [h, half] = blockToTime(idx);
     const item = document.createElement('div');
     item.className = 'dayflow-mini-item' + (isActive ? ' active-item' : '');
     item.innerHTML = `<div class="dayflow-mini-dot" style="background:${isCompleted?'var(--faint)':proj.color};opacity:${isCompleted?.4:1}"></div>
-      <div class="dayflow-mini-time">${formatTime(h,half)}</div>
       <div class="dayflow-mini-name" style="color:${isCompleted?'var(--faint)':proj.color}">${proj.emoji} ${proj.name}</div>
       <div class="dayflow-mini-status">${isCompleted?'✓':isActive?'<span class="pulse" style="color:var(--gold)">●</span>':''}</div>`;
     item.onclick = () => {
@@ -5345,8 +5613,9 @@ function renderStats() {
       if (ds > today) return;
       if (firstDay && ds < firstDay) return;
       (d.completed || []).forEach(idx => {
-        if ((d.blockNotes || {})[idx]?.meeting) meetingCount++;
-        else nonMeetingCount++;
+        const span = (d.blockSpan || {})[idx] || 1;
+        if ((d.blockNotes || {})[idx]?.meeting) meetingCount += span;
+        else nonMeetingCount += span;
       });
     });
     const totalMDist = meetingCount + nonMeetingCount;
@@ -5465,8 +5734,9 @@ function buildMeetingsDistSection(el, daysList) {
     const d = state.days[ds];
     if (!d) return;
     (d.completed || []).forEach(idx => {
-      if ((d.blockNotes || {})[idx]?.meeting) meetingCount++;
-      else nonMeetingCount++;
+      const span = (d.blockSpan || {})[idx] || 1;
+      if ((d.blockNotes || {})[idx]?.meeting) meetingCount += span;
+      else nonMeetingCount += span;
     });
   });
   const totalMDist = meetingCount + nonMeetingCount;
@@ -6029,19 +6299,20 @@ function renderNotesTab() {
       const idx = +idxStr;
       const note = (bn.note || '').trim();
       const resumeNote = (bn.resumeNote || '').trim();
+      const updates = (bn.updates || '').trim();
       const todos = (bn.todos || []);
       const meeting = bn.meeting === true;
-      if (!note && !resumeNote) return;
+      if (!note && !resumeNote && !updates) return;
       const projId = sched[idx];
       if (!projId) return;
       if (!projEntries[projId]) projEntries[projId] = [];
-      const [h, half] = blockToTime(idx);
       projEntries[projId].push({
         date: ds,
         blockIdx: idx,
-        timeLabel: formatTime(h, half),
+        blockNum: (dayData.blockIds || {})[idx] || null,
         note,
         resumeNote,
+        updates,
         todos,
         importance: bn.importance || null,
         tags: bn.tags || [],
@@ -6060,6 +6331,7 @@ function renderNotesTab() {
         timeLabel: null,
         note: (n.note || '').trim(),
         resumeNote: '',
+        updates: '',
         todos: [],
         importance: n.importance || null,
         tags: n.tags || [],
@@ -6196,17 +6468,36 @@ function renderNotesTab() {
     meetingOnlyBtn.innerHTML = '📅 Meetings';
     meetingOnlyBtn.onclick = () => { ui.notesTabMeetingFilter = !ui.notesTabMeetingFilter; renderNotesTab(); };
     meetingRow.appendChild(meetingOnlyBtn);
-    const leftOffFilterBtn = document.createElement('button');
-    leftOffFilterBtn.className = 'imp-filter-btn' + (ui.notesTabLeftOffFilter ? ' active' : '');
-    leftOffFilterBtn.textContent = '📌 Left off';
-    leftOffFilterBtn.onclick = () => { ui.notesTabLeftOffFilter = !ui.notesTabLeftOffFilter; renderNotesTab(); };
-    meetingRow.appendChild(leftOffFilterBtn);
     const imageFilterBtn = document.createElement('button');
     imageFilterBtn.className = 'imp-filter-btn' + (ui.notesTabImageFilter ? ' active' : '');
     imageFilterBtn.textContent = '🖼 Images';
     imageFilterBtn.onclick = () => { ui.notesTabImageFilter = !ui.notesTabImageFilter; renderNotesTab(); };
     meetingRow.appendChild(imageFilterBtn);
     filterBar.appendChild(meetingRow);
+    // Content filter row
+    const contentRow = document.createElement('div');
+    contentRow.className = 'notes-filter-row';
+    const allContentBtn = document.createElement('button');
+    allContentBtn.className = 'imp-filter-btn' + (!ui.notesTabUpdatesFilter && !ui.notesTabNotesFilter && !ui.notesTabLeftOffFilter ? ' active' : '');
+    allContentBtn.textContent = 'All content';
+    allContentBtn.onclick = () => { ui.notesTabUpdatesFilter = false; ui.notesTabNotesFilter = false; ui.notesTabLeftOffFilter = false; renderNotesTab(); };
+    contentRow.appendChild(allContentBtn);
+    const updatesOnlyBtn = document.createElement('button');
+    updatesOnlyBtn.className = 'imp-filter-btn' + (ui.notesTabUpdatesFilter ? ' active' : '');
+    updatesOnlyBtn.textContent = '📝 Updates';
+    updatesOnlyBtn.onclick = () => { ui.notesTabUpdatesFilter = !ui.notesTabUpdatesFilter; if (ui.notesTabUpdatesFilter) { ui.notesTabNotesFilter = false; ui.notesTabLeftOffFilter = false; } renderNotesTab(); };
+    contentRow.appendChild(updatesOnlyBtn);
+    const notesOnlyBtn = document.createElement('button');
+    notesOnlyBtn.className = 'imp-filter-btn' + (ui.notesTabNotesFilter ? ' active' : '');
+    notesOnlyBtn.textContent = '📄 General Notes';
+    notesOnlyBtn.onclick = () => { ui.notesTabNotesFilter = !ui.notesTabNotesFilter; if (ui.notesTabNotesFilter) { ui.notesTabUpdatesFilter = false; ui.notesTabLeftOffFilter = false; } renderNotesTab(); };
+    contentRow.appendChild(notesOnlyBtn);
+    const nextStepsOnlyBtn = document.createElement('button');
+    nextStepsOnlyBtn.className = 'imp-filter-btn' + (ui.notesTabLeftOffFilter && !ui.notesTabUpdatesFilter && !ui.notesTabNotesFilter ? ' active' : '');
+    nextStepsOnlyBtn.textContent = '📌 Next Steps';
+    nextStepsOnlyBtn.onclick = () => { ui.notesTabLeftOffFilter = !ui.notesTabLeftOffFilter; if (ui.notesTabLeftOffFilter) { ui.notesTabUpdatesFilter = false; ui.notesTabNotesFilter = false; } renderNotesTab(); };
+    contentRow.appendChild(nextStepsOnlyBtn);
+    filterBar.appendChild(contentRow);
   }
 
   // Render log for selected project
@@ -6233,11 +6524,13 @@ function renderNotesTab() {
     .filter(e => ui.notesTabImportanceFilter === 0 || (e.importance || 0) === ui.notesTabImportanceFilter)
     .filter(e => !ui.notesTabTagFilter.length || ui.notesTabTagFilter.some(tid => (e.tags || []).includes(tid)))
     .filter(e => !ui.notesTabMeetingFilter || e.meeting === true)
+    .filter(e => !ui.notesTabUpdatesFilter || !!e.updates)
+    .filter(e => !ui.notesTabNotesFilter || !!e.note)
     .filter(e => !ui.notesTabLeftOffFilter || !!e.resumeNote)
     .filter(e => !ui.notesTabImageFilter || hasImage(e));
 
   if (!entries.length) {
-    const hasFilter = ui.notesTabImportanceFilter > 0 || ui.notesTabTagFilter.length > 0 || ui.notesTabMeetingFilter || ui.notesTabLeftOffFilter || ui.notesTabImageFilter;
+    const hasFilter = ui.notesTabImportanceFilter > 0 || ui.notesTabTagFilter.length > 0 || ui.notesTabMeetingFilter || ui.notesTabLeftOffFilter || ui.notesTabUpdatesFilter || ui.notesTabNotesFilter || ui.notesTabImageFilter;
     logEl.innerHTML = `<div class="notes-log-empty">${hasFilter ? 'No notes match the current filters.' : 'No notes for this project yet.'}</div>`;
     return;
   }
@@ -6261,7 +6554,7 @@ function renderNotesTab() {
       const entryProj = getProject(e.projId);
       const timeDisplay = e.isStandalone
         ? `<span style="color:var(--faint);font-style:italic">note</span>`
-        : e.timeLabel;
+        : (e.blockNum != null ? `#${e.blockNum}` : '');
       let html = `<div class="notes-log-entry-header">
         <div class="notes-log-entry-time">${timeDisplay}</div>
         <div class="notes-log-entry-proj">
@@ -6273,13 +6566,22 @@ function renderNotesTab() {
         ${(e.tags||[]).length ? `<div class="notes-log-tags">${(e.tags).map(tid=>{const t=(state.settings.tags||[]).find(x=>x.id===tid);return t?`<span class="notes-log-tag-dot" title="${t.name||tid}" style="background:${t.color}"></span>`:''}).join('')}</div>` : ''}
         ${e.isStandalone ? `<button class="notes-standalone-del-btn" title="Delete note" data-noteid="${e.noteId}" data-projid="${e.projId}">✕</button>` : ''}
       </div>`;
-      if (e.resumeNote) {
-        html += `<div class="notes-log-resume-note"><span class="notes-log-resume-label">📌 left off</span>${escHtml(e.resumeNote)}</div>`;
+      const contentFiltered = ui.notesTabUpdatesFilter || ui.notesTabNotesFilter || ui.notesTabLeftOffFilter;
+      const showUpdatesSection = !contentFiltered || ui.notesTabUpdatesFilter;
+      const showNotesSection = !contentFiltered || ui.notesTabNotesFilter;
+      const showNextStepsSection = !contentFiltered || ui.notesTabLeftOffFilter;
+      if (showUpdatesSection && e.updates) {
+        html += `<div class="notes-log-resume-note notes-log-updates-note"><span class="notes-log-resume-label">📝 updates</span><div class="md-preview" style="margin:0;padding:0;border:none;background:none;font-family:'DM Mono',monospace;font-size:10px">${renderMarkdown(e.updates)}</div></div>`;
       }
-      if (e.note) {
-        html += `<div class="notes-log-note-text md-preview" style="border-radius:6px;padding:4px 6px;cursor:pointer;word-break:break-word;line-height:1.6;color:var(--muted)">${renderMarkdown(e.note)}</div>`;
-      } else {
-        html += `<div class="notes-log-note-text" style="border-radius:6px;padding:4px 6px;cursor:pointer;color:var(--faint);font-style:italic">Click to edit note…</div>`;
+      if (showNotesSection) {
+        if (e.note) {
+          html += `<div class="notes-log-resume-note" style="border-color:var(--border2)"><span class="notes-log-resume-label" style="color:var(--muted)">📄 general notes</span><div class="md-preview" style="margin:0;padding:0;border:none;background:none;font-family:'DM Mono',monospace;font-size:10px">${renderMarkdown(e.note)}</div></div>`;
+        } else if (!contentFiltered && !e.updates && !e.resumeNote) {
+          html += `<div class="notes-log-note-text" style="border-radius:6px;padding:4px 6px;cursor:pointer;color:var(--faint);font-style:italic">Click to edit note…</div>`;
+        }
+      }
+      if (showNextStepsSection && e.resumeNote) {
+        html += `<div class="notes-log-resume-note"><span class="notes-log-resume-label">📌 next steps</span><div class="md-preview" style="margin:0;padding:0;border:none;background:none;font-family:'DM Mono',monospace;font-size:10px">${renderMarkdown(e.resumeNote)}</div></div>`;
       }
       if (e.todos.length) {
         html += `<div class="notes-log-todos"><div class="notes-log-todos-label">TO-DOS</div>`;
@@ -6295,6 +6597,14 @@ function renderNotesTab() {
       card.style.cursor = 'pointer';
       if (e.isStandalone) {
         card.onclick = (ev) => {
+          const blockRefLink = ev.target.closest('.block-ref-link');
+          if (blockRefLink) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            const found = blockByGlobalId(+blockRefLink.dataset.blocknum);
+            if (found) openNotesModal(found.blockIdx, found.ds, true);
+            return;
+          }
           if (ev.target.closest('.notes-standalone-del-btn')) return;
           openProjNoteModal(e.projId, e.noteId);
         };
@@ -6313,7 +6623,17 @@ function renderNotesTab() {
           };
         }
       } else {
-        card.onclick = () => openNotesModal(e.blockIdx, e.date, true);
+        card.onclick = (ev) => {
+          const blockRefLink = ev.target.closest('.block-ref-link');
+          if (blockRefLink) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            const found = blockByGlobalId(+blockRefLink.dataset.blocknum);
+            if (found) openNotesModal(found.blockIdx, found.ds, true);
+            return;
+          }
+          openNotesModal(e.blockIdx, e.date, true);
+        };
       }
       group.appendChild(card);
     });
@@ -6336,11 +6656,11 @@ function buildNotesEntries(projId) {
       const todos = (bn.todos || []);
       if (!note && !todos.length) return;
       if (sched[idx] !== projId) return;
-      const [h, half] = blockToTime(idx);
+      const blockId = (dayData.blockIds || {})[idx];
       entries.push({
         date: ds,
         blockIdx: idx,
-        timeLabel: formatTime(h, half),
+        blockLabel: blockId != null ? `#${blockId}` : `slot ${idx}`,
         note,
         todos
       });
@@ -6401,7 +6721,7 @@ function exportNotesMarkdown(projId) {
         lines.push(`### ${dayLabel}`);
         lines.push('');
         byDay[day].forEach(e => {
-          lines.push(`**${e.timeLabel}**`);
+          lines.push(`**${e.blockLabel}**`);
           if (e.note) {
             lines.push('');
             lines.push(e.note);
@@ -6595,6 +6915,17 @@ document.addEventListener('DOMContentLoaded', () => {
     if (ui.tab === 'today') renderGamePanel();
   });
 
+  // Per-day goal override
+  document.getElementById('day-goal-input').addEventListener('change', e => {
+    const v = Math.max(1, Math.min(36, +e.target.value || dailyGoal()));
+    const day = currentDayData();
+    day.dailyGoal = v;
+    setDay(ui.currentDate, day);
+    e.target.value = v;
+    save();
+    if (ui.tab === 'today') renderGamePanel();
+  });
+
   // Time-off toggle
   document.getElementById('timeoff-btn').addEventListener('click', toggleTimeOff);
 
@@ -6645,11 +6976,13 @@ document.addEventListener('DOMContentLoaded', () => {
               const result = await resp.json();
               if (result.ok) {
                 insertText(`![${filename}](/${result.path})`);
+                el.focus();
                 return;
               }
             } catch (_) { /* server offline — fall through to base64 */ }
             // Fallback: embed as base64 data URL
             insertText(`![${filename}](${dataUrl})`);
+            el.focus();
           };
           reader.readAsDataURL(file);
           break;
@@ -6657,6 +6990,34 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     });
   }
+  function attachTabIndent(textareaId) {
+    const el = document.getElementById(textareaId);
+    if (!el) return;
+    el.addEventListener('keydown', e => {
+      if (e.key !== 'Tab') return;
+      e.preventDefault();
+      const start = el.selectionStart;
+      const end = el.selectionEnd;
+      if (e.shiftKey) {
+        // Shift+Tab: remove up to 2 spaces of indentation from start of current line
+        const lineStart = el.value.lastIndexOf('\n', start - 1) + 1;
+        const spaces = el.value.slice(lineStart).match(/^ {1,2}/);
+        if (spaces) {
+          const n = spaces[0].length;
+          el.value = el.value.slice(0, lineStart) + el.value.slice(lineStart + n);
+          el.selectionStart = el.selectionEnd = Math.max(lineStart, start - n);
+          el.dispatchEvent(new Event('input'));
+        }
+      } else {
+        el.value = el.value.slice(0, start) + '  ' + el.value.slice(end);
+        el.selectionStart = el.selectionEnd = start + 2;
+        el.dispatchEvent(new Event('input'));
+      }
+    });
+  }
+  attachTabIndent('notes-textarea');
+  attachTabIndent('block-focus-note-area');
+
   attachImagePaste('notes-textarea', () => {
     if (ui.notesProjId) {
       const p = getProject(ui.notesProjId); return p ? p.name : 'misc';

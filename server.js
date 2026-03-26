@@ -117,8 +117,8 @@ const server = http.createServer((req, res) => {
         const rawExt  = matches[1] === 'jpeg' ? 'jpg' : matches[1];
         const imgData = Buffer.from(matches[2], 'base64');
 
-        // Sanitise each path component to prevent traversal; replace spaces with hyphens
-        const safeProject  = (project  || 'misc').replace(/[^\w\s\-]/g, '').trim().replace(/\s+/g, '-') || 'misc';
+        // Sanitise each path component to prevent traversal
+        const safeProject  = (project  || 'misc').replace(/[^\w\s\-]/g, '').trim() || 'misc';
         const safeMonth    = (yearMonth|| '').replace(/[^0-9\-]/g, '');
         const safeFilename = (filename || 'image').replace(/[^\w\-]/g, '') || 'image';
 
@@ -134,9 +134,11 @@ const server = http.createServer((req, res) => {
         fs.writeFileSync(path.join(dir, fname), imgData);
 
         const urlPath = `images/${safeProject}/${safeMonth}/${fname}`;
+        // URL-encode path segments so stored paths are browser-safe (no raw spaces)
+        const encodedPath = urlPath.split('/').map(s => encodeURIComponent(s)).join('/');
         console.log(`\n[image] Saved ${urlPath}`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, path: urlPath }));
+        res.end(JSON.stringify({ ok: true, path: encodedPath }));
       } catch (err) {
         console.error('\nImage save error:', err.message);
         res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -205,7 +207,11 @@ const server = http.createServer((req, res) => {
     const mime = MIME[ext] || 'application/octet-stream';
     try {
       const data = fs.readFileSync(filePath);
-      res.writeHead(200, { 'Content-Type': mime });
+      const headers = { 'Content-Type': mime };
+      if (ext === '.js' || ext === '.css' || ext === '.html') {
+        headers['Cache-Control'] = 'no-store';
+      }
+      res.writeHead(200, headers);
       res.end(data);
     } catch (err) {
       res.writeHead(404);

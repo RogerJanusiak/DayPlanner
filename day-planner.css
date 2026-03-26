@@ -528,6 +528,17 @@ html,body {
   padding:5px 10px;
   margin-left:auto;
 }
+#day-goal-wrap {
+  display:flex;
+  align-items:center;
+  gap:5px;
+}
+.day-goal-label {
+  font-family:'DM Mono',monospace;
+  font-size:10px;
+  color:var(--faint);
+  letter-spacing:.06em;
+}
 #date-display {
   font-family:'DM Mono',monospace;
   font-size:14px;
@@ -876,21 +887,21 @@ html,body {
   background:var(--bg2);
   border:1px solid var(--border2);
   border-radius:16px;
-  width:500px;
-  max-width:95vw;
-  max-height:88vh;
+  width:min(860px, 93vw);
+  max-height:92vh;
   display:flex;
   flex-direction:column;
   box-shadow:0 24px 64px rgba(0,0,0,.7);
 }
 #notes-modal.notes-only {
-  width:min(1200px, 93vw);
-  max-height:92vh;
+  width:min(1200px, 95vw);
+  max-height:95vh;
 }
 #notes-modal.notes-only #notes-textarea {
-  min-height:calc(92vh - 210px);
+  min-height:calc(95vh - 210px);
   resize:none;
 }
+#notes-modal.notes-standalone #notes-updates-wrapper,
 #notes-modal.notes-standalone #notes-leftoff-wrapper,
 #notes-modal.notes-standalone #block-proj-todos-section {
   display:none;
@@ -905,13 +916,13 @@ html,body {
 }
 #notes-edit-area.live #notes-textarea {
   flex:1;
-  min-height:calc(92vh - 210px);
+  min-height:calc(95vh - 210px);
   resize:none;
 }
 #notes-edit-area.live #notes-md-preview {
   flex:1;
   display:block !important;
-  min-height:calc(92vh - 210px);
+  min-height:calc(95vh - 210px);
   overflow-y:auto;
   cursor:default;
 }
@@ -2273,12 +2284,29 @@ html,body {
   white-space:pre-wrap;
   word-break:break-word;
 }
+/* Notes modal updates textarea */
+#notes-updates-textarea {
+  width:100%;
+  min-height:48px;
+  background:var(--bg);
+  border:1px solid var(--border2);
+  border-radius:6px;
+  color:var(--text);
+  font-family:'DM Mono',monospace;
+  font-size:11px;
+  padding:8px 10px;
+  resize:vertical;
+  box-sizing:border-box;
+  line-height:1.6;
+  margin-bottom:4px;
+}
+#notes-updates-textarea:focus { outline:none; border-color:var(--teal); }
 /* Notes modal resume textarea */
 #notes-resume-textarea {
   width:100%;
-  min-height:60px;
+  min-height:48px;
   background:var(--bg);
-  border:1px solid var(--gold);
+  border:1px solid var(--border2);
   border-radius:6px;
   color:var(--text);
   font-family:'DM Mono',monospace;
@@ -2306,6 +2334,24 @@ html,body {
   box-sizing:border-box;
 }
 #block-focus-note-area:focus{border-color:var(--purple)}
+#block-focus-updates-area,
+#block-focus-nextsteps-area {
+  width:100%;
+  min-height:52px;
+  background:var(--bg3);
+  border:1px solid var(--border2);
+  color:var(--text);
+  font-family:'DM Mono',monospace;
+  font-size:12px;
+  border-radius:8px;
+  padding:11px 13px;
+  outline:none;
+  resize:vertical;
+  line-height:1.8;
+  box-sizing:border-box;
+}
+#block-focus-updates-area:focus{border-color:var(--teal)}
+#block-focus-nextsteps-area:focus{border-color:var(--gold)}
 #block-focus-save-note {
   margin-top:8px;
   background:var(--purple);
@@ -2607,7 +2653,7 @@ html,body {
   font-size:10px;
   color:var(--text);
   background:var(--bg1);
-  border:1px solid var(--gold);
+  border:1px solid var(--border);
   border-radius:6px;
   padding:7px 10px;
   margin-bottom:8px;
@@ -2621,6 +2667,9 @@ html,body {
   letter-spacing:.06em;
   text-transform:uppercase;
   margin-bottom:4px;
+}
+.notes-log-updates-note .notes-log-resume-label {
+  color:var(--teal);
 }
 .notes-log-entry:hover{border-color:var(--border2)}
 .notes-log-entry-header {
